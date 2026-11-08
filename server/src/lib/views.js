@@ -15,3 +15,95 @@ export function selfUser(row) {
     paypalSandboxEmail: row.paypal_sandbox_email,
   };
 }
+
+/** Row from GET /api/groups list query. */
+export function groupSummary(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    emoji: row.emoji,
+    memberCount: Number(row.member_count),
+    nextTrip: row.next_trip_id
+      ? {
+          id: row.next_trip_id,
+          title: row.next_trip_title,
+          status: row.next_trip_status,
+          startDate: row.next_trip_start_date,
+        }
+      : null,
+  };
+}
+
+export function groupDetail(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    emoji: row.emoji,
+    personality: row.personality,
+    createdAt: row.created_at,
+  };
+}
+
+export function groupMember(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    avatarEmoji: row.avatar_emoji,
+    role: row.role,
+    funTitle: row.fun_title,
+  };
+}
+
+export function tripSummary(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    startDate: row.start_date,
+    endDate: row.end_date,
+  };
+}
+
+export function invitePreview(row) {
+  return { groupName: row.name, emoji: row.emoji, memberCount: Number(row.member_count) };
+}
+
+export function inviteUrl(token) {
+  const origin = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').replace(/\/+$/, '');
+  return `${origin}/join/${token}`;
+}
+
+/** Trip fields any trip member may see. No budgets, commitments or private text. */
+export function tripPublic(row) {
+  return {
+    id: row.id,
+    groupId: row.group_id,
+    title: row.title,
+    region: row.region,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    nights: row.nights,
+    status: row.status,
+    chosenListingId: row.chosen_listing_id,
+    bookingDeadline: row.booking_deadline,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+/** Trip member as seen by other members: status only. */
+export function tripMemberPublic(row) {
+  return { id: row.id, name: row.name, avatarEmoji: row.avatar_emoji, status: row.status };
+}
+
+/** PRIVATE: only ever returned to the owner. Joined private_inputs + own trip_members row. */
+export function privateInputSelf(row) {
+  return {
+    maxBudgetCents: row.max_budget_cents,
+    preferencesText: row.preferences_text,
+    comfortText: row.comfort_text,
+    commitmentType: row.commitment_type,
+    roastLevel: row.roast_level,
+    updatedAt: row.updated_at,
+  };
+}

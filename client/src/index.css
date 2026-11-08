@@ -19,3 +19,28 @@ html, body, #root {
 body {
   @apply bg-mint text-pine font-mono antialiased;
 }
+
+html {
+  scroll-behavior: smooth;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-coral);
+  outline-offset: 2px;
+}
+
+.pixel-flame {
+  animation: pixel-flicker 0.9s steps(2, end) infinite;
+  transform-box: fill-box;
+  transform-origin: bottom center;
+}
+
+@keyframes pixel-flicker {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.82); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .pixel-flame { animation: none; }
+}

@@ -6,6 +6,9 @@ import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import { authRouter } from './routes/auth.js';
 import { meRouter } from './routes/me.js';
+import { groupsRouter } from './routes/groups.js';
+import { invitesRouter } from './routes/invites.js';
+import { tripsRouter } from './routes/trips.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 
 export const app = express();
@@ -30,6 +33,9 @@ const authLimiter = rateLimit({
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/me', meRouter);
+app.use('/api/groups', groupsRouter);
+app.use('/api/invites', invitesRouter);
+app.use('/api/trips', tripsRouter);
 
 app.use(notFound);
 app.use(errorHandler);
