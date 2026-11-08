@@ -1,9 +1,17 @@
 const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:4000').replace(/\/+$/, '');
 
+export const AI_UNAVAILABLE_MESSAGE = 'Pact is catching its breath — try again in a minute';
+
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = null) {
     super(message);
     this.status = status;
+    this.code = code;
+  }
+
+  /** True when the AI planner/chat is down or out of quota (show a calm retry note, not an error). */
+  get aiUnavailable() {
+    return this.code === 'ai_unavailable';
   }
 }
 
@@ -18,6 +26,9 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? `Request failed (${res.status})`);
+  if (!res.ok) {
+    if (data?.code === 'ai_unavailable') throw new ApiError(res.status, AI_UNAVAILABLE_MESSAGE, data.code);
+    throw new ApiError(res.status, data?.error ?? `Request failed (${res.status})`, data?.code ?? null);
+  }
   return data;
 }

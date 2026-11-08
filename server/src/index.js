@@ -9,7 +9,9 @@ import { meRouter } from './routes/me.js';
 import { groupsRouter } from './routes/groups.js';
 import { invitesRouter } from './routes/invites.js';
 import { tripsRouter } from './routes/trips.js';
+import { planningRouter } from './routes/planning.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
+import { aiMode } from './ai/llm.js';
 
 export const app = express();
 
@@ -30,19 +32,27 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests, slow down' },
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.get('/health', (_req, res) => res.json({ ok: true, aiMode: aiMode() }));
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/me', meRouter);
 app.use('/api/groups', groupsRouter);
 app.use('/api/invites', invitesRouter);
 app.use('/api/trips', tripsRouter);
+app.use('/api/trips', planningRouter);
 
 app.use(notFound);
 app.use(errorHandler);
 
 if (process.env.NODE_ENV !== 'test') {
   const port = 4000;
-  app.listen(port, () => console.log(`Pact server listening on :${port}`));
+  app.listen(port, (err) => {
+    // Express 5 passes listen errors (e.g. EADDRINUSE) here instead of throwing.
+    if (err) {
+      console.error(`Pact server could not start on :${port}: ${err.code ?? err.message}`);
+      process.exit(1);
+    }
+    console.log(`Pact server listening on :${port}`);
+  });
 }
 
 export default app;

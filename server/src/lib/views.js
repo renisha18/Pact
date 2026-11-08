@@ -107,3 +107,18 @@ export function privateInputSelf(row) {
     updatedAt: row.updated_at,
   };
 }
+
+/** Proposal any trip member may see. Joined proposals + listings + vote count. No shares. */
+export function proposalPublic(row) {
+  return {
+    id: row.id,
+    listingName: row.listing_name,
+    area: row.area,
+    emoji: row.emoji,
+    pricePerNightCents: row.price_per_night_cents,
+    totalCents: row.total_cents,
+    amenities: row.amenities,
+    reason: row.reason_text,
+    voteCount: Number(row.vote_count),
+  };
+}

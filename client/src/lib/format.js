@@ -29,3 +29,14 @@ export function safeNext(value) {
     ? value
     : '/';
 }
+
+/** Integer cents → "$1,234" or "$1,234.50" (display only; the server computes every amount). */
+export function formatUsd(cents) {
+  const n = Number(cents) / 100;
+  return n.toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+}

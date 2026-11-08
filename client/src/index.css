@@ -44,3 +44,16 @@ html {
   html { scroll-behavior: auto; }
   .pixel-flame { animation: none; }
 }
+
+/* Planning: stepped pixel animations */
+.pixel-caret { animation: pixel-blink 1s steps(1, end) infinite; }
+.pixel-bob { animation: pixel-bob 1.2s steps(2, end) infinite; }
+.pixel-dot { animation: pixel-dot 1.2s steps(2, end) infinite; }
+
+@keyframes pixel-blink { 50% { opacity: 0; } }
+@keyframes pixel-bob { 50% { transform: translateY(-4px); } }
+@keyframes pixel-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .pixel-caret, .pixel-bob, .pixel-dot { animation: none; }
+}

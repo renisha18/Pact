@@ -7,6 +7,7 @@ import { formatRange } from '../lib/format.js';
 import {
   Page, Loading, ErrorNote, NotFoundCard, TripStatusChip, MemberStatusChip, Avatar, btn, card, input, label,
 } from '../components/ui.jsx';
+import { PixelLock, PlanPanel, Proposals, AskPact } from '../components/Planning.jsx';
 
 const COMMIT_OPTIONS = [
   { value: 'hold', emoji: '🔒', title: 'Hold now', body: 'Place a PayPal hold for my share as soon as we agree.' },
@@ -16,18 +17,7 @@ const COMMIT_OPTIONS = [
 const ROAST_LEVELS = ['off', 'mild', 'savage'];
 const EDITABLE_TRIP = new Set(['collecting', 'planning']);
 const LOCKED_MEMBER = new Set(['committed', 'dropped']);
-
-function PixelLock() {
-  return (
-    <svg viewBox="0 0 8 9" shapeRendering="crispEdges" className="h-4 w-4 shrink-0" aria-hidden="true">
-      <rect x="2" y="0" width="4" height="1" fill="var(--color-pine)" />
-      <rect x="1" y="1" width="1" height="3" fill="var(--color-pine)" />
-      <rect x="6" y="1" width="1" height="3" fill="var(--color-pine)" />
-      <rect x="0" y="4" width="8" height="5" fill="var(--color-coral)" />
-      <rect x="3" y="5" width="2" height="2" fill="var(--color-pine)" />
-    </svg>
-  );
-}
+const HAS_PROPOSALS = new Set(['voting', 'committing', 'booked']);
 
 const centsToUsd = (cents) => (cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2));
 
@@ -171,6 +161,24 @@ export default function Trip() {
   const { id } = useParams();
   const { user } = useAuth();
   const { data, error, loading, reload } = useApi(`/api/trips/${encodeURIComponent(id)}`);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState(null);
+  const [planMessage, setPlanMessage] = useState(null);
+
+  async function plan() {
+    setPlanning(true);
+    setPlanError(null);
+    setPlanMessage(null);
+    try {
+      const res = await api(`/api/trips/${encodeURIComponent(id)}/plan`, { method: 'POST' });
+      setPlanMessage(res.message ?? null);
+      await reload();
+    } catch (err) {
+      setPlanError(err.message);
+    } finally {
+      setPlanning(false);
+    }
+  }
 
   if (loading && !data) return <Page><Loading /></Page>;
   if (error) {
@@ -185,6 +193,9 @@ export default function Trip() {
   const me = members.find((m) => m.id === user.id);
   const editable = EDITABLE_TRIP.has(trip.status) && !LOCKED_MEMBER.has(me?.status);
   const submittedCount = members.filter((m) => m.status !== 'invited').length;
+  const waitingCount = members.filter((m) => m.status === 'invited').length;
+  const isOrganizer = data.myRole === 'organizer';
+  const showProposals = HAS_PROPOSALS.has(trip.status) && !planning;
 
   return (
     <Page>
@@ -217,6 +228,21 @@ export default function Trip() {
             ))}
           </ul>
         </section>
+      </div>
+
+      <div className="mt-8 space-y-8">
+        {(EDITABLE_TRIP.has(trip.status) || planning) && (
+          <PlanPanel isOrganizer={isOrganizer} waitingCount={waitingCount} planning={planning}
+            error={planError} message={planMessage} onPlan={plan} />
+        )}
+        {showProposals && (
+          <>
+            {planError && <p role="alert" className="rounded-xl bg-coral/10 px-3 py-2 text-sm text-coral-dark">{planError}</p>}
+            <Proposals tripId={trip.id} tripStatus={trip.status} canVote={me?.status !== 'dropped'}
+              isOrganizer={isOrganizer} onChanged={reload} onReplan={plan} />
+          </>
+        )}
+        <AskPact tripId={trip.id} />
       </div>
     </Page>
   );
