@@ -1,0 +1,13 @@
+{
+  "name": "pact",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n server,client -c green,magenta \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "db:migrate": "node server/db/migrate.js",
+    "db:seed": "node server/db/seed.js",
+    "test": "npm --prefix server test"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  }
+}

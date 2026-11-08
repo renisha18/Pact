@@ -1,0 +1,1 @@
+-- Pact schema. Money columns are integer cents.

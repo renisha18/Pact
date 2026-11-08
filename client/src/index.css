@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --color-mint: #D5E8DF;
+  --color-mint-dark: #BFDACE;
+  --color-pine: #1F3D33;
+  --color-pine-soft: #4B6B5F;
+  --color-coral: #E8615A;
+  --color-coral-dark: #D14E47;
+  --color-water: #8FB8AD;
+  --color-cloud: #F7FAF8;
+}
+
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  @apply bg-mint text-pine font-mono antialiased;
+}
