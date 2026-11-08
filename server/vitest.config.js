@@ -1,5 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  test: { environment: 'node', env: { NODE_ENV: 'test' } },
+  test: {
+    environment: 'node',
+    env: { NODE_ENV: 'test', JWT_SECRET: 'test-secret-not-for-production' },
+  },
 });
