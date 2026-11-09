@@ -141,6 +141,35 @@ describe('planning flow', () => {
     expect(rows[0].status).toBe('committing');
   });
 
+  it('a no-fit re-plan during voting clears old proposals and returns the trip to planning', async () => {
+    await pg.exec(`
+      INSERT INTO trips (group_id, title, start_date, end_date, nights) VALUES (1, 'T2', '2027-02-01', '2027-02-03', 2);
+      INSERT INTO trip_members (trip_id, user_id) VALUES (2, 1), (2, 2);
+    `);
+    for (const u of [A, B]) {
+      const res = await request(app).put('/api/trips/2/private-input').set('Cookie', as(u))
+        .send({ maxBudgetUsd: 289, preferencesText: 'pool', comfortText: '', commitmentType: 'hold' });
+      expect(res.status).toBe(200);
+    }
+    const first = await request(app).post('/api/trips/2/plan').set('Cookie', as(A));
+    expect(first.body.status).toBe('voting');
+    const old = (await request(app).get('/api/trips/2/proposals').set('Cookie', as(B))).body.proposals;
+    expect(old.length).toBeGreaterThan(0);
+    await request(app).post('/api/trips/2/votes').set('Cookie', as(A)).send({ proposalId: old[0].id });
+
+    // Budgets drop (inputs are locked in voting, so change them directly): nothing fits any more.
+    await pg.query('UPDATE private_inputs SET max_budget_cents = 1000 WHERE trip_id = 2');
+    const replan = await request(app).post('/api/trips/2/plan').set('Cookie', as(A));
+    expect(replan.status).toBe(200);
+    expect(replan.body).toMatchObject({ status: 'planning', proposals: [] });
+
+    const props = await request(app).get('/api/trips/2/proposals').set('Cookie', as(B));
+    expect(props.body.proposals).toEqual([]);
+    expect(props.body.myVoteProposalId).toBeNull();
+    const { rows: [t] } = await pg.query('SELECT status, chosen_listing_id FROM trips WHERE id = 2');
+    expect(t).toEqual({ status: 'planning', chosen_listing_id: null });
+  });
+
   it('rejects votes once voting is closed', async () => {
     const res = await request(app).post(`/api/trips/${TRIP}/votes`).set('Cookie', as(A)).send({ proposalId: 1 });
     expect(res.status).toBe(409);

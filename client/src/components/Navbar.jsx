@@ -1,8 +1,47 @@
+import { useEffect, useState } from 'react';
 import { Link, NavLink } from 'react-router';
+import { api } from '../api.js';
 import { useAuth } from '../lib/auth.jsx';
 import TentIcon from './TentIcon.jsx';
 
 const pill = 'inline-flex items-center rounded-full font-medium transition-colors';
+
+/** Organizer-only, and only when the server runs with DEMO_MODE=true (otherwise renders nothing). */
+function DemoReset({ userId }) {
+  const [canReset, setCanReset] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api('/api/demo/status').then((r) => live && setCanReset(r.canReset === true)).catch(() => live && setCanReset(false));
+    return () => { live = false; };
+  }, [userId]);
+
+  if (!canReset) return null;
+
+  async function reset() {
+    if (!window.confirm('Reset the demo? This wipes ALL data and restores the Goa Gang 2.0 scenario.')) return;
+    setBusy(true);
+    try {
+      const { tripId } = await api('/api/demo/reset', { method: 'POST', body: {} });
+      window.location.assign(`/trips/${tripId}`);
+    } catch (err) {
+      window.alert(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={reset}
+      disabled={busy}
+      className={`${pill} border border-coral px-3 py-1 text-xs text-coral-dark hover:bg-coral/10 disabled:opacity-60`}
+    >
+      {busy ? 'Resetting…' : 'Reset demo'}
+    </button>
+  );
+}
 
 export default function Navbar() {
   const { user, loading, logout } = useAuth();
@@ -41,6 +80,7 @@ export default function Navbar() {
             <span className="h-8 w-20" aria-hidden="true" />
           ) : user ? (
             <>
+              <DemoReset userId={user.id} />
               <span className="flex items-center gap-1.5 text-sm">
                 <span className="grid h-8 w-8 place-items-center rounded-full bg-cloud text-base" aria-hidden="true">
                   {user.avatarEmoji}

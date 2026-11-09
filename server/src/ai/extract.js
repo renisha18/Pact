@@ -98,6 +98,22 @@ function combine(comfort, preferences) {
 }
 
 /**
+ * Builds the extracted_json cache for known tags (used by the demo scenario, so it
+ * doesn't depend on the AI). Same shape extractPreferences writes: each field is keyed
+ * by a hash of its exact text, so editing a field makes it re-extract.
+ * @param {{comfort?: {text: string, features?: string[], avoidRoomTypes?: string[]},
+ *          preferences?: {text: string, features?: string[], avoidRoomTypes?: string[]}}} fields
+ */
+export function extractionCache(fields, mode = aiMode()) {
+  const built = {};
+  for (const field of Object.keys(FIELDS)) {
+    const { text = '', features = [], avoidRoomTypes = [] } = fields[field] ?? {};
+    built[field] = { key: textKey(text), features, avoidRoomTypes };
+  }
+  return { ...combine(built.comfort, built.preferences), version: EXTRACTION_VERSION, mode, fields: built };
+}
+
+/**
  * Extracts and saves tags for one member's private input. comfort_text and
  * preferences_text are extracted in SEPARATE calls; empty fields skip the AI;
  * each field is cached by a hash of its own text, so editing one never re-runs the other.
