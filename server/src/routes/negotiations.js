@@ -8,15 +8,17 @@ import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
 import { negotiationSelf } from '../lib/views.js';
-import { insertNegotiation, otherBudgetAskPending, EXHAUSTED_MESSAGE } from '../lib/negotiations.js';
-import { runPlan, logEvent, sendAiUnavailable, PLANNABLE_STATUSES } from './planning.js';
+import { buildNegotiation, insertNegotiation, otherBudgetAskPending, EXHAUSTED_MESSAGE } from '../lib/negotiations.js';
+import { runPlan, logEvent, sendAiUnavailable, PLANNABLE_STATUSES, ALREADY_PLANNING_MESSAGE } from './planning.js';
 import { AiError } from '../ai/llm.js';
 
 export const negotiationsRouter = Router();
 negotiationsRouter.use(requireAuth);
 
-const MAX_BUDGET_CENTS = 1_000_000; // same ceiling as the private-input form ($10,000)
+const MAX_BUDGET_CENTS = 1_000_000; // same ceiling as the private-input form ($10,000): sanity bound on a share
 const notFound = () => new HttpError(404, 'Not found');
+const EXPIRED_MESSAGE = 'This question has expired';
+const expired = () => new HttpError(409, EXPIRED_MESSAGE);
 
 async function requireTripMember(req, _res, next) {
   req.tripId = parseId(req.params.id);
@@ -34,7 +36,8 @@ const SELECT_OWN = `
 // --- GET /:id/my-negotiation
 
 negotiationsRouter.get('/:id/my-negotiation', requireTripMember, async (req, res) => {
-  const { rows } = await query(`${SELECT_OWN} AND n.status = 'pending' ORDER BY n.id DESC LIMIT 1`, [
+  const { rows } = await query(`${SELECT_OWN} AND n.status = 'pending'
+       AND n.plan_version = (SELECT active_version FROM trips WHERE id = $1) ORDER BY n.id DESC LIMIT 1`, [
     req.tripId,
     req.user.id,
   ]);
@@ -68,9 +71,40 @@ async function messageContext(tripId, group) {
   };
 }
 
-async function expireAndMaybeExhaust(tripId, nid) {
-  await query(`UPDATE negotiations SET status = 'expired' WHERE id = $1`, [nid]);
-  const { rows } = await query(`SELECT 1 FROM negotiations WHERE trip_id = $1 AND status = 'pending' LIMIT 1`, [tripId]);
+/**
+ * Locks the trip, then the member's own negotiation, and checks it is still answerable:
+ * pending, from the active plan, and the member's input unchanged since it was asked
+ * (compared in SQL, full precision). Lock order trip -> negotiation everywhere.
+ */
+async function lockOpenNegotiation(client, tripId, userId, nid) {
+  const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [tripId]);
+  const { rows: [n] } = await client.query(
+    `SELECT n.id, n.status, n.plan_version, n.change_json,
+            (n.plan_version = t.active_version) AS current,
+            (n.input_updated_at IS NOT NULL AND n.input_updated_at = pi.updated_at) AS fresh
+       FROM negotiations n
+       JOIN trips t ON t.id = n.trip_id
+       LEFT JOIN private_inputs pi ON pi.trip_id = n.trip_id AND pi.user_id = n.user_id
+      WHERE n.id = $1 AND n.trip_id = $2 AND n.user_id = $3
+      FOR UPDATE OF n`,
+    [nid, tripId, userId],
+  );
+  if (!n) throw notFound();
+  if (n.status !== 'pending' || !n.current || !n.fresh || !PLANNABLE_STATUSES.includes(t.status)) throw expired();
+  return n;
+}
+
+/** The member said no: 'rejected' (never re-asked). Public notice if nothing is left. */
+async function declineAndMaybeExhaust(tripId, userId, nid) {
+  await withTransaction(async (client) => {
+    await lockOpenNegotiation(client, tripId, userId, nid);
+    await client.query(`UPDATE negotiations SET status = 'rejected', responded_at = now() WHERE id = $1`, [nid]);
+  });
+  const { rows } = await query(
+    `SELECT 1 FROM negotiations n JOIN trips t ON t.id = n.trip_id
+      WHERE n.trip_id = $1 AND n.status = 'pending' AND n.plan_version = t.active_version LIMIT 1`,
+    [tripId],
+  );
   if (rows.length > 0) return null;
   await logEvent({ query }, tripId, null, 'negotiation_exhausted');
   return EXHAUSTED_MESSAGE;
@@ -80,9 +114,8 @@ negotiationsRouter.post('/:id/negotiations/:nid', requireTripMember, validateBod
   const nid = parseId(req.params.nid);
   const { rows } = await query(`${SELECT_OWN} AND n.id = $3`, [req.tripId, req.user.id, nid]);
   if (rows.length === 0) throw notFound();
-  const neg = rows[0];
-  if (neg.status !== 'pending') throw new HttpError(409, 'This is no longer open');
-  const c = neg.change_json;
+  // Cheap pre-check (no lock); every write below re-checks under FOR UPDATE.
+  const c = (await withTransaction((client) => lockOpenNegotiation(client, req.tripId, req.user.id, nid))).change_json;
   const { response } = req.body;
 
   if (response === 'more_time') {
@@ -94,16 +127,21 @@ negotiationsRouter.post('/:id/negotiations/:nid', requireTripMember, validateBod
   const noAlternative = c.isAlternative || !c.alternative ||
     (c.alternative.change.kind === 'raiseBudget' && await otherBudgetAskPending({ query }, req.tripId, req.user.id));
   if (response === 'reject' || (response === 'another' && noAlternative)) {
-    const notice = await expireAndMaybeExhaust(req.tripId, nid);
+    const notice = await declineAndMaybeExhaust(req.tripId, req.user.id, nid);
     return res.json({ response: 'reject', ...(notice ? { notice } : {}) });
   }
 
   if (response === 'another') {
     const { rows: [group] } = await query('SELECT personality FROM groups WHERE id = $1', [req.trip.group_id]);
     const ctx = await messageContext(req.tripId, group);
-    await query(`UPDATE negotiations SET status = 'rejected' WHERE id = $1 AND status = 'pending'`, [nid]);
-    await insertNegotiation({ query }, {
-      tripId: req.tripId, userId: req.user.id, option: c.alternative, alternative: null, isAlternative: true, ctx,
+    // The AI message is written outside the transaction; the swap is atomic.
+    const built = await buildNegotiation({
+      userId: req.user.id, option: c.alternative, alternative: null, isAlternative: true, ctx,
+    });
+    await withTransaction(async (client) => {
+      const n = await lockOpenNegotiation(client, req.tripId, req.user.id, nid);
+      await client.query(`UPDATE negotiations SET status = 'rejected', responded_at = now() WHERE id = $1`, [nid]);
+      await insertNegotiation(client, req.tripId, n.plan_version, built);
     });
     const { rows: [next] } = await query(`${SELECT_OWN} AND n.status = 'pending' ORDER BY n.id DESC LIMIT 1`, [
       req.tripId,
@@ -112,39 +150,39 @@ negotiationsRouter.post('/:id/negotiations/:nid', requireTripMember, validateBod
     return res.json({ response: 'another', negotiation: negotiationSelf(next) });
   }
 
-  // accept: apply the change to this member's OWN private input, then re-plan.
+  // accept: record consent for EXACTLY the listing and share shown. Never edits private_inputs.
   await withTransaction(async (client) => {
-    const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [req.tripId]);
-    if (!PLANNABLE_STATUSES.includes(t.status)) throw new HttpError(409, 'This trip can no longer be planned');
-    const { rows: [n] } = await client.query('SELECT status FROM negotiations WHERE id = $1 FOR UPDATE', [nid]);
-    if (n.status !== 'pending') throw new HttpError(409, 'This is no longer open');
+    const n = await lockOpenNegotiation(client, req.tripId, req.user.id, nid);
+    const listingId = c.listingId;
+    const share = c.newShareCents;
+    if (!Number.isInteger(listingId) || !Number.isInteger(share) || share < 0 || share > MAX_BUDGET_CENTS) throw expired();
 
+    let kind;
+    let roomType = null;
     if (c.change.kind === 'raiseBudget') {
-      const { rowCount } = await client.query(
-        `UPDATE private_inputs SET max_budget_cents = max_budget_cents + $3
-          WHERE trip_id = $1 AND user_id = $2 AND max_budget_cents + $3 <= $4`,
-        [req.tripId, req.user.id, c.change.byCents, MAX_BUDGET_CENTS],
-      );
-      if (rowCount === 0) throw new HttpError(409, "That would go over the maximum budget");
+      kind = 'budget';
     } else if (c.change.kind === 'allowRoomType') {
       const { rows: [pi] } = await client.query(
-        'SELECT extracted_json FROM private_inputs WHERE trip_id = $1 AND user_id = $2 FOR UPDATE',
+        'SELECT extracted_json FROM private_inputs WHERE trip_id = $1 AND user_id = $2',
         [req.tripId, req.user.id],
       );
       // Defence in depth: never relax a comfort ('strict') item.
       const avoids = pi?.extracted_json?.avoidRoomTypes ?? [];
       const strict = avoids.some((a) => (typeof a === 'string' ? a : a.type) === c.change.roomType &&
         (typeof a === 'string' || a.strength === 'strict'));
-      if (strict) throw new HttpError(409, 'This is no longer open');
-      await client.query(
-        `UPDATE private_inputs SET allowed_room_types = array_append(allowed_room_types, $3)
-          WHERE trip_id = $1 AND user_id = $2 AND NOT ($3 = ANY(allowed_room_types))`,
-        [req.tripId, req.user.id, c.change.roomType],
-      );
+      if (strict) throw expired();
+      kind = 'room_type';
+      roomType = c.change.roomType;
     } else {
-      throw new HttpError(409, 'This is no longer open');
+      throw expired();
     }
-    await client.query(`UPDATE negotiations SET status = 'accepted' WHERE id = $1`, [nid]);
+    await client.query(
+      `INSERT INTO consent_overrides
+         (trip_id, user_id, negotiation_id, plan_version, listing_id, kind, accepted_max_share_cents, room_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [req.tripId, req.user.id, nid, n.plan_version, listingId, kind, share, roomType],
+    );
+    await client.query(`UPDATE negotiations SET status = 'accepted', responded_at = now() WHERE id = $1`, [nid]);
   });
 
   try {
@@ -152,6 +190,10 @@ negotiationsRouter.post('/:id/negotiations/:nid', requireTripMember, validateBod
     res.json({ response: 'accept', plan });
   } catch (err) {
     if (err instanceof AiError) return sendAiUnavailable(res, 'replan', err);
+    // Accepted either way. A plan already running sees this response (responded_at) and re-runs.
+    if (err instanceof HttpError && err.status === 409) {
+      return res.json({ response: 'accept', plan: null, message: err.message ?? ALREADY_PLANNING_MESSAGE });
+    }
     throw err;
   }
 });

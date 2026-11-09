@@ -8,7 +8,9 @@ export const MAX_NEGOTIATING_MEMBERS = 2;
 export const WORKING_MESSAGE = 'Pact is working something out privately…';
 export const EXHAUSTED_MESSAGE = "Pact couldn't find a plan that fits everyone — try changing the trip.";
 
-const DECLINED = ['rejected', 'expired'];
+// Only an explicit "no" from the member blocks re-asking. 'expired' = superseded
+// (newer plan, or the member edited their input), so it may be asked again.
+const DECLINED = ['rejected'];
 const isBudget = (o) => o.change.kind === 'raiseBudget';
 const optionKey = (o) => `${o.change.kind}:${o.change.roomType ?? ''}`;
 
@@ -25,19 +27,8 @@ function changeJson(option, alternative, isAlternative) {
   };
 }
 
-/** Removes 'preferred' avoids the member agreed to. 'strict' entries are never touched. */
-export function applyAllowedRoomTypes(extracted, allowed) {
-  if (!extracted || !allowed?.length) return extracted;
-  return {
-    ...extracted,
-    avoidRoomTypes: extracted.avoidRoomTypes.filter(
-      (a) => typeof a === 'string' || a.strength !== 'preferred' || !allowed.includes(a.type),
-    ),
-  };
-}
-
-/** Writes one pending negotiation (with its AI/template message). */
-export async function insertNegotiation(db, { tripId, userId, option, alternative, isAlternative, ctx }) {
+/** Writes the (AI or template) message for one ask. May call the AI: never inside a DB transaction. */
+export async function buildNegotiation({ userId, option, alternative, isAlternative, ctx }) {
   const listing = ctx.listingsById.get(option.listingId);
   const message = await writeNegotiationMessage({
     personality: ctx.personality,
@@ -46,21 +37,32 @@ export async function insertNegotiation(db, { tripId, userId, option, alternativ
     stay: { name: listing.name, area: listing.area },
     otherPrivateInputs: ctx.privateInputs.filter((p) => p.user_id !== userId),
   });
-  const { rows: [row] } = await db.query(
-    `INSERT INTO negotiations (trip_id, user_id, change_json, message) VALUES ($1, $2, $3, $4) RETURNING id`,
-    [tripId, userId, JSON.stringify(changeJson(option, alternative, isAlternative)), message],
-  );
-  return row.id;
+  return { userId, changeJson: changeJson(option, alternative, isAlternative), message };
 }
 
 /**
- * Called by the planner when nothing fits. Replaces any pending negotiations.
- * @param ctx {{ personality, extracted: Map<userId, tags>, listingsById: Map, privateInputs: rows }}
- * @returns {Promise<{ outcome: 'plan_b', nights: number } | { outcome: 'negotiating' } | { outcome: 'none' | 'exhausted' }>}
+ * Inserts one pending ask for plan `version`. The member's private_inputs.updated_at is
+ * snapshotted IN SQL (microsecond precision; a JS Date round-trip would lose it).
  */
-export async function openNegotiations(db, tripId, options, ctx) {
-  await db.query(`DELETE FROM negotiations WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
+export async function insertNegotiation(db, tripId, version, built) {
+  const { rows: [row] } = await db.query(
+    `INSERT INTO negotiations (trip_id, user_id, change_json, message, plan_version, input_updated_at)
+     SELECT $1, $2, $3, $4, $5, pi.updated_at
+       FROM private_inputs pi WHERE pi.trip_id = $1 AND pi.user_id = $2
+     RETURNING id`,
+    [tripId, built.userId, JSON.stringify(built.changeJson), built.message, version],
+  );
+  return row?.id ?? null;
+}
 
+/**
+ * Called by the planner when nothing fits. Reads only; writes nothing. Messages may
+ * call the AI, so run this OUTSIDE any transaction, then save with saveNegotiations.
+ * @param ctx {{ personality, extracted: Map<userId, tags>, listingsById: Map, privateInputs: rows }}
+ * @returns {Promise<{ outcome: 'plan_b', nights: number } | { outcome: 'negotiating', asks: object[] } |
+ *   { outcome: 'none' | 'exhausted' }>}
+ */
+export async function prepareNegotiations(db, tripId, options, ctx) {
   const planB = options.find((o) => o.scope === 'group' && o.change.kind === 'nights');
   if (planB) return { outcome: 'plan_b', nights: planB.change.to };
 
@@ -89,18 +91,31 @@ export async function openNegotiations(db, tripId, options, ctx) {
     if (isBudget(usable[0])) budgetAsked = true;
     chosen.push([userId, usable]);
   }
+  if (chosen.length === 0) return { outcome: declined.length > 0 ? 'exhausted' : 'none' };
+
+  const asks = [];
   for (const [userId, [option, alternative]] of chosen) {
-    await insertNegotiation(db, { tripId, userId, option, alternative, isAlternative: false, ctx });
+    asks.push(await buildNegotiation({ userId, option, alternative, isAlternative: false, ctx }));
   }
-  if (chosen.length > 0) return { outcome: 'negotiating' };
-  return { outcome: declined.length > 0 ? 'exhausted' : 'none' };
+  return { outcome: 'negotiating', asks };
+}
+
+/** Inside the save transaction: expire every older pending ask, then insert this version's. */
+export async function saveNegotiations(client, tripId, version, asks) {
+  await client.query(
+    `UPDATE negotiations SET status = 'expired' WHERE trip_id = $1 AND status = 'pending' AND plan_version <> $2`,
+    [tripId, version],
+  );
+  for (const built of asks) await insertNegotiation(client, tripId, version, built);
 }
 
 /** True if someone OTHER than userId has a pending budget ask on this trip. */
 export async function otherBudgetAskPending(db, tripId, userId) {
   const { rows } = await db.query(
-    `SELECT 1 FROM negotiations
-      WHERE trip_id = $1 AND user_id <> $2 AND status = 'pending' AND change_json->'change'->>'kind' = 'raiseBudget'
+    `SELECT 1 FROM negotiations n
+       JOIN trips t ON t.id = n.trip_id AND t.active_version = n.plan_version
+      WHERE n.trip_id = $1 AND n.user_id <> $2 AND n.status = 'pending'
+        AND n.change_json->'change'->>'kind' = 'raiseBudget'
       LIMIT 1`,
     [tripId, userId],
   );
@@ -113,7 +128,8 @@ export async function otherBudgetAskPending(db, tripId, userId) {
  */
 export async function negotiationNotice(db, tripId) {
   const { rows: [r] } = await db.query(
-    `SELECT EXISTS (SELECT 1 FROM negotiations WHERE trip_id = $1 AND status = 'pending') AS pending,
+    `SELECT EXISTS (SELECT 1 FROM negotiations n JOIN trips t ON t.id = n.trip_id
+                     WHERE n.trip_id = $1 AND n.status = 'pending' AND n.plan_version = t.active_version) AS pending,
             last.action AS last_action, last.details AS last_details
        FROM (SELECT 1) one
        LEFT JOIN LATERAL (

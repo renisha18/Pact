@@ -11,12 +11,10 @@ vi.mock('../src/db.js', async () => {
 // PREF-SHARED -> preferred shared_rooms.
 const generateJson = vi.fn(async (system, content) => {
   if (system.includes('extract trip-stay preferences')) {
-    return {
-      hardRequirements: [],
-      avoidRoomTypes: content.includes('COMFORT-DORM') ? ['mixed_dorm'] : [],
-      preferredAvoidRoomTypes: content.includes('PREF-SHARED') ? ['shared_rooms'] : [],
-      softPreferences: ['wifi'],
-    };
+    // One call per field; the marker sits in its own field, so strictness comes from the field.
+    const isPrefs = system.includes('would like');
+    const avoid = content.includes('COMFORT-DORM') ? ['mixed_dorm'] : content.includes('PREF-SHARED') ? ['shared_rooms'] : [];
+    return { features: isPrefs ? ['wifi'] : [], avoidRoomTypes: avoid };
   }
   const ids = [...content.matchAll(/"listingId":(\d+)/g)].map((m) => Number(m[1]));
   return { picks: [...new Set(ids)].slice(0, 3).map((listingId) => ({ listingId, reason: 'Lovely spot.' })) };
@@ -136,14 +134,20 @@ describe('negotiations', () => {
     expect((await get(1, B)).body.id).toBe(negB); // untouched
   });
 
-  it('accept applies the change to the member\'s own input and re-plans', async () => {
+  it('accept records a listing-scoped consent override (never edits private input) and re-plans', async () => {
+    const { rows: [piBefore] } = await pg.query('SELECT max_budget_cents, allowed_room_types, updated_at FROM private_inputs WHERE trip_id = 1 AND user_id = $1', [B]);
     const res = await respond(1, negB, B, 'accept');
     expect(res.status).toBe(200);
     expect(res.body.plan.status).toBe('voting');
     expect(res.body.plan.proposals.map((p) => p.listingName)).toContain('Shared Nest');
 
-    const { rows: [pi] } = await pg.query('SELECT allowed_room_types FROM private_inputs WHERE trip_id = 1 AND user_id = $1', [B]);
-    expect(pi.allowed_room_types).toEqual(['shared_rooms']);
+    const { rows: [pi] } = await pg.query('SELECT max_budget_cents, allowed_room_types, updated_at FROM private_inputs WHERE trip_id = 1 AND user_id = $1', [B]);
+    expect(pi).toEqual(piBefore);
+    const { rows: ov } = await pg.query(
+      `SELECT o.user_id, l.name, o.kind, o.accepted_max_share_cents, o.room_type, o.status
+         FROM consent_overrides o JOIN listings l ON l.id = o.listing_id WHERE o.trip_id = 1`,
+    );
+    expect(ov).toEqual([{ user_id: B, name: 'Shared Nest', kind: 'room_type', accepted_max_share_cents: 2000, room_type: 'shared_rooms', status: 'active' }]);
     expect((await get(1, A)).status).toBe(404); // A's ask is moot now
     const props = await request(app).get('/api/trips/1/proposals').set('Cookie', as(C));
     expect(props.body.notice).toBeNull();
@@ -203,7 +207,15 @@ describe('negotiations', () => {
   });
 
   it('openNegotiations asks at most one member for money per shortfall', async () => {
-    const { openNegotiations } = await import('../src/lib/negotiations.js');
+    const { prepareNegotiations, saveNegotiations } = await import('../src/lib/negotiations.js');
+    // prepare (AI messages, no transaction) + save (expires older asks), as the planner does.
+    const openNegotiations = async (db, tripId, options, ctx) => {
+      const { rows: [t] } = await db.query('UPDATE trips SET plan_version = plan_version + 1 WHERE id = $1 RETURNING plan_version', [tripId]);
+      const result = await prepareNegotiations(db, tripId, options, ctx);
+      if (result.outcome !== 'negotiating') return result;
+      await saveNegotiations(db, tripId, t.plan_version, result.asks);
+      return { outcome: result.outcome };
+    };
     const raise = (userId) => ({ scope: 'member', userId, change: { kind: 'raiseBudget', byCents: 5000 },
       unlockedListingIds: [3], listingId: 3, newShareCents: 15000, matchesOwnWishes: [] });
     const allow = (userId) => ({ scope: 'member', userId, change: { kind: 'allowRoomType', roomType: 'private_rooms' },

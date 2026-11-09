@@ -518,6 +518,10 @@ commitRouter.post('/:id/leave', requireTripMember, requireActiveMember, moneyLim
 
   await withTransaction(async (db) => {
     await db.query(`UPDATE trip_members SET status = 'dropped' WHERE trip_id = $1 AND user_id = $2`, [tripId, user.id]);
+    await db.query(
+      `UPDATE consent_overrides SET status = 'expired' WHERE trip_id = $1 AND user_id = $2 AND status = 'active'`,
+      [tripId, user.id],
+    );
     await logEvent(db, tripId, user.id, 'left');
   });
 
@@ -544,6 +548,7 @@ commitRouter.post('/:id/cancel', requireTripMember, requireOrganizer, moneyLimit
   const { tripId } = req;
   // Already cancelled is allowed: re-running releases anything that failed last time.
   await query(`UPDATE trips SET status = 'cancelled' WHERE id = $1`, [tripId]); // stop new commits first
+  await query(`UPDATE consent_overrides SET status = 'expired' WHERE trip_id = $1 AND status = 'active'`, [tripId]);
   const released = await releaseAll(tripId, req.user.id, { refund: true });
   await logEvent({ query }, tripId, req.user.id, 'cancelled', released);
   res.json({ status: 'cancelled', ...(released.failed ? { message: 'Some payments couldn’t be released yet. Try cancelling again in a minute.' } : {}) });

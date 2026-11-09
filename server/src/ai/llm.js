@@ -139,7 +139,7 @@ const MOCK_REASONS = [
 ];
 
 const MOCK_JSON = {
-  extract: () => ({ hardRequirements: [], avoidRoomTypes: [], preferredAvoidRoomTypes: [], softPreferences: [] }),
+  extract: () => ({ features: [], avoidRoomTypes: [] }),
   pick: (content) => {
     const ids = [...new Set([...content.matchAll(/"listingId":(\d+)/g)].map((m) => Number(m[1])))];
     return { picks: ids.slice(0, 3).map((listingId, i) => ({ listingId, reason: MOCK_REASONS[i] })) };

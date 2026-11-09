@@ -95,14 +95,14 @@ function PrivateForm({ tripId, editable, onSaved }) {
         </div>
 
         <div>
-          <label htmlFor="prefs" className={label}>What you’d love</label>
+          <label htmlFor="prefs" className={label}>Nice-to-haves — Pact may suggest trade-offs</label>
           <textarea id="prefs" rows={3} maxLength={500} value={form.preferencesText} onChange={set('preferencesText')}
             className={input} placeholder="A pool, near the surf, a kitchen for group dinners…" />
           <p className="mt-1 text-right text-xs text-pine-soft">{form.preferencesText.length}/500</p>
         </div>
 
         <div>
-          <label htmlFor="comfort" className={label}>Not comfortable with</label>
+          <label htmlFor="comfort" className={label}>Must-haves — Pact will never ask you to change these</label>
           <textarea id="comfort" rows={2} maxLength={300} value={form.comfortText} onChange={set('comfortText')}
             className={input} placeholder="Dorms, long drives, loud party spots…" />
           <p className="mt-1 text-right text-xs text-pine-soft">{form.comfortText.length}/300</p>
@@ -252,7 +252,8 @@ export default function Trip() {
           <PlanPanel isOrganizer={isOrganizer} waitingCount={waitingCount} planning={planning}
             error={planError} message={planMessage} onPlan={plan} />
         )}
-        {EDITABLE_TRIP.has(trip.status) && !planning && (
+        {/* Also during voting: a no-fit re-plan leaves no proposals, and this card takes their place. */}
+        {(EDITABLE_TRIP.has(trip.status) || trip.status === 'voting') && !planning && (
           <PlanStatus tripId={trip.id} tripNights={trip.nights} refreshKey={refreshKey} />
         )}
         {showProposals && (

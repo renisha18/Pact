@@ -191,8 +191,8 @@ describe('llm', () => {
       const out = await generateJson('S', '<stays>[{"listingId":7},{"listingId":9},{"listingId":7}]</stays>', picks, { task: 'pick' });
       expect(out.picks.map((p) => p.listingId)).toEqual([7, 9]);
 
-      const tags = z.object({ hardRequirements: z.array(z.string()), avoidRoomTypes: z.array(z.string()), softPreferences: z.array(z.string()) });
-      await expect(generateJson('S', 'u', tags, { task: 'extract' })).resolves.toEqual({ hardRequirements: [], avoidRoomTypes: [], softPreferences: [] });
+      const tags = z.object({ features: z.array(z.string()), avoidRoomTypes: z.array(z.string()) });
+      await expect(generateJson('S', 'u', tags, { task: 'extract' })).resolves.toEqual({ features: [], avoidRoomTypes: [] });
       await expect(generateText('S', 'u', { task: 'ask' })).resolves.toMatch(/mock mode/);
       expect(generateContent).not.toHaveBeenCalled();
     });

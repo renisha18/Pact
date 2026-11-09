@@ -5,7 +5,7 @@
 //   c. member: raise their budget cap (rounded up to $5)
 // It never touches 'strict' avoids or hard requirements (both come from comfort_text).
 // Member-scoped options carry private numbers: route each one ONLY to its userId.
-import { filterListings, avoidType } from './filterListings.js';
+import { filterListings, avoidType, capsForListing } from './filterListings.js';
 import { fairSplit } from './fairSplit.js';
 
 const ROUND_CENTS = 500;
@@ -14,8 +14,8 @@ const roundUp = (cents) => Math.ceil(cents / ROUND_CENTS) * ROUND_CENTS;
 const EMPTY = { hardRequirements: [], avoidRoomTypes: [], softPreferences: [] };
 const prefsOf = (m) => ({ ...EMPTY, ...(m.extracted ?? {}) });
 
-function shareFor(totalCents, members, userId) {
-  const split = fairSplit(totalCents, members.map((m) => ({ userId: m.userId, capCents: m.capCents })));
+function shareFor(totalCents, members, userId, listingId) {
+  const split = fairSplit(totalCents, capsForListing(members, listingId));
   return split.shares.find((s) => s.userId === userId).amountCents;
 }
 
@@ -30,7 +30,7 @@ function memberOption(members, userId, change, cost, candidates, listingsById, t
     change,
     unlockedListingIds: candidates.map((c) => c.listingId),
     listingId: top.listingId, // the unlocked stay newShareCents/matchesOwnWishes describe
-    newShareCents: shareFor(top.totalCents, members, userId),
+    newShareCents: shareFor(top.totalCents, members, userId, top.listingId),
     matchesOwnWishes: own.softPreferences.filter((s) => features.has(s)),
     cost,
   };
@@ -84,20 +84,22 @@ export function counterfactual(listings, members, nights, groupSize) {
 
     // c. Raise this member's cap. fairSplit is feasible iff sum(caps) >= total, so the
     // minimum raise for a listing is its shortfall; the cheapest eligible listing needs the least.
-    const capSum = members.reduce((s, x) => s + x.capCents, 0);
     const maxTotal = listings.reduce((mx, l) => Math.max(mx, l.price_per_night_cents * nights), 0);
     const unbounded = members.map((x, j) => (j !== i ? x : { ...x, capCents: x.capCents + maxTotal }));
     const eligible = filterListings(listings, unbounded, nights, groupSize);
     if (eligible.length === 0) continue;
-    const cheapest = Math.min(...eligible.map((c) => c.totalCents));
-    const raise = roundUp(cheapest - capSum);
+    // Caps are per listing (consent overrides), so the shortfall is too.
+    const shortfall = (c) => c.totalCents - capsForListing(members, c.listingId).reduce((s, x) => s + x.capCents, 0);
+    const raise = roundUp(Math.min(...eligible.map(shortfall)));
     const raised = members.map((x, j) => (j !== i ? x : { ...x, capCents: x.capCents + raise }));
     const found = filterListings(listings, raised, nights, groupSize);
     if (found.length > 0) {
       options.push(memberOption(
         raised, m.userId, { kind: 'raiseBudget', byCents: raise },
         m.capCents > 0 ? raise / m.capCents : Infinity, found, listingsById,
-        found.reduce((lo, c) => (c.totalCents < lo.totalCents ? c : lo)),
+        // The stay this raise was sized for (smallest shortfall, then cheapest): the override targets it.
+        found.reduce((lo, c) => (shortfall(c) < shortfall(lo) ||
+          (shortfall(c) === shortfall(lo) && c.totalCents < lo.totalCents) ? c : lo)),
       ));
     }
   }

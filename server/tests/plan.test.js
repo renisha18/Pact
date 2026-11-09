@@ -11,7 +11,7 @@ vi.mock('../src/db.js', async () => {
 // reason (and again on regeneration) to prove leakCheck + template fallback.
 const generateJson = vi.fn(async (system, content) => {
   if (system.includes('extract trip-stay preferences')) {
-    return { hardRequirements: [], avoidRoomTypes: [], softPreferences: ['pool'] };
+    return { features: system.includes('would like') ? ['pool'] : [], avoidRoomTypes: [] };
   }
   if (system.includes('Write a reason for this ONE stay')) {
     return { reason: 'Great if your cap is $137, Riya!' };

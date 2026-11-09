@@ -8,11 +8,11 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
-import { filterListings } from '../lib/filterListings.js';
+import { filterListings, capsForListing } from '../lib/filterListings.js';
 import { fairSplit } from '../lib/fairSplit.js';
 import { counterfactual } from '../lib/counterfactual.js';
 import {
-  openNegotiations, applyAllowedRoomTypes, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
+  prepareNegotiations, saveNegotiations, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
 } from '../lib/negotiations.js';
 import { proposalPublic } from '../lib/views.js';
 import { extractAll, pickAndExplain } from '../ai/plan.js';
@@ -25,6 +25,9 @@ planningRouter.use(requireAuth);
 const TOP_CANDIDATES = 8;
 export const PLANNABLE_STATUSES = ['collecting', 'planning', 'voting'];
 const NO_FIT_MESSAGE = 'No stay fits everyone right now. Try different dates or budgets.';
+export const ALREADY_PLANNING_MESSAGE = 'Pact is already planning';
+export const STALE_PLAN_MESSAGE = 'Plans changed while Pact was thinking — try again';
+const CLAIM_SECONDS = 60;
 
 async function requireTripMember(req, _res, next) {
   req.tripId = parseId(req.params.id);
@@ -86,6 +89,7 @@ async function loadProposals(tripId) {
             l.name AS listing_name, l.area, l.emoji, l.price_per_night_cents, l.amenities,
             (SELECT count(*) FROM votes v WHERE v.proposal_id = p.id) AS vote_count
        FROM proposals p JOIN listings l ON l.id = p.listing_id
+       JOIN trips t ON t.id = p.trip_id AND t.active_version = p.plan_version
       WHERE p.trip_id = $1
       ORDER BY p.id`,
     [tripId],
@@ -95,21 +99,118 @@ async function loadProposals(tripId) {
 
 // --- Planning (shared by POST /:id/plan and an accepted negotiation)
 
+/**
+ * PRIVATE: active consent overrides, userId -> [{listingId, kind, maxShareCents, roomType}].
+ * Server-side only (filtering and share caps); never returned to any client.
+ */
+export async function loadOverrides(db, tripId) {
+  const { rows } = await db.query(
+    `SELECT user_id, listing_id, kind, accepted_max_share_cents, room_type
+       FROM consent_overrides WHERE trip_id = $1 AND status = 'active' ORDER BY id`,
+    [tripId],
+  );
+  const out = new Map();
+  for (const r of rows) {
+    if (!out.has(r.user_id)) out.set(r.user_id, []);
+    out.get(r.user_id).push({
+      listingId: r.listing_id, kind: r.kind, maxShareCents: r.accepted_max_share_cents, roomType: r.room_type,
+    });
+  }
+  return out;
+}
+
+export const RECHECK_MESSAGE = 'Plans need a quick re-check';
+
 const nightsText = (n) => `${n} ${n === 1 ? 'night' : 'nights'}`;
 
 /**
+ * Claims a planning run: one atomic UPDATE bumps plan_version and stamps
+ * planning_started_at, unless another run started in the last 60s.
+ * @returns {Promise<number>} this run's plan_version
+ */
+async function claimPlan(tripId) {
+  const { rows } = await query(
+    `UPDATE trips SET plan_version = plan_version + 1, planning_started_at = now()
+      WHERE id = $1 AND status = ANY($2)
+        AND (planning_started_at IS NULL OR planning_started_at < now() - make_interval(secs => $3))
+      RETURNING plan_version`,
+    [tripId, PLANNABLE_STATUSES, CLAIM_SECONDS],
+  );
+  if (rows.length > 0) return rows[0].plan_version;
+  const { rows: [t] } = await query('SELECT status FROM trips WHERE id = $1', [tripId]);
+  if (!PLANNABLE_STATUSES.includes(t.status)) throw new HttpError(409, 'This trip can no longer be planned');
+  throw new HttpError(409, ALREADY_PLANNING_MESSAGE);
+}
+
+/** Frees the claim if it's still ours. Changes nothing visible. */
+function releaseClaim(db, tripId, version) {
+  return db.query('UPDATE trips SET planning_started_at = NULL WHERE id = $1 AND plan_version = $2', [tripId, version]);
+}
+
+const STALE = Symbol('stale');
+
+/**
+ * The short save transaction. Locks the trip; writes only if this run still owns the
+ * claim and nothing it read changed after it started (private input edits, negotiation
+ * responses). On stale input it writes nothing, frees the claim and returns STALE.
+ * All comparisons use planning_started_at inside SQL (full precision).
+ */
+async function saveRun(tripId, version, write) {
+  return withTransaction(async (client) => {
+    const { rows: [t] } = await client.query(
+      'SELECT status, plan_version FROM trips WHERE id = $1 FOR UPDATE',
+      [tripId],
+    );
+    if (t.plan_version !== version) throw new HttpError(409, ALREADY_PLANNING_MESSAGE);
+    if (!PLANNABLE_STATUSES.includes(t.status)) {
+      await releaseClaim(client, tripId, version);
+      throw new HttpError(409, 'This trip can no longer be planned');
+    }
+    const { rows: [stale] } = await client.query(
+      `SELECT EXISTS (SELECT 1 FROM private_inputs WHERE trip_id = t.id AND updated_at > t.planning_started_at)
+           OR EXISTS (SELECT 1 FROM negotiations WHERE trip_id = t.id AND responded_at > t.planning_started_at) AS stale
+         FROM trips t WHERE t.id = $1`,
+      [tripId],
+    );
+    if (stale.stale) {
+      await releaseClaim(client, tripId, version);
+      return STALE;
+    }
+    const out = await write(client, t);
+    await releaseClaim(client, tripId, version);
+    return out;
+  });
+}
+
+/**
  * Runs the planner for a trip. Throws HttpError for 400/409 and AiError if the AI is down.
+ * No DB transaction is held during AI calls. A failed run changes nothing visible:
+ * the previous proposals and pending questions stay valid.
  * @returns {Promise<{status: string, proposals: object[], message?: string, planB?: {nights: number}}>}
  *   PUBLIC: safe to return to any trip member.
  */
-export async function runPlan(tripId, actorUserId) {
+export async function runPlan(tripId, actorUserId, { retryIfStale = true } = {}) {
+  const version = await claimPlan(tripId);
+  let result;
+  try {
+    result = await planRun(tripId, actorUserId, version);
+  } catch (err) {
+    await releaseClaim({ query }, tripId, version);
+    throw err;
+  }
+  if (result !== STALE) return result;
+  if (retryIfStale) return runPlan(tripId, actorUserId, { retryIfStale: false });
+  throw new HttpError(409, STALE_PLAN_MESSAGE);
+}
+
+async function planRun(tripId, actorUserId, version) {
+  // Everything is read AFTER the claim, so any later change is caught by saveRun.
   const { rows: [trip] } = await query('SELECT * FROM trips WHERE id = $1', [tripId]);
-  if (!PLANNABLE_STATUSES.includes(trip.status)) throw new HttpError(409, 'This trip can no longer be planned');
 
   // PRIVATE rows: used for filtering and leakCheck only, never returned or sent to the AI.
   const { rows: members } = await query(
     `SELECT tm.trip_id, tm.user_id, u.name,
-            pi.max_budget_cents, pi.preferences_text, pi.comfort_text, pi.allowed_room_types
+            pi.max_budget_cents, pi.preferences_text, pi.comfort_text
        FROM trip_members tm
        JOIN users u ON u.id = tm.user_id
        LEFT JOIN private_inputs pi ON pi.trip_id = tm.trip_id AND pi.user_id = tm.user_id
@@ -131,60 +232,79 @@ export async function runPlan(tripId, actorUserId) {
   );
   const listingsById = new Map(listings.map((l) => [l.id, l]));
 
-  const raw = await extractAll(members);
-  const extracted = new Map(members.map((m) => [m.user_id, applyAllowedRoomTypes(raw.get(m.user_id), m.allowed_room_types)]));
+  const extracted = await extractAll(members);
+  const overrides = await loadOverrides({ query }, tripId);
   const filterMembers = members.map((m) => ({
     userId: m.user_id,
     capCents: m.max_budget_cents,
     extracted: extracted.get(m.user_id),
+    overrides: overrides.get(m.user_id) ?? [],
   }));
   const candidates = filterListings(listings, filterMembers, trip.nights, members.length).slice(0, TOP_CANDIDATES);
   const picks = candidates.length > 0 ? await pickAndExplain(candidates, listingsById, group.personality, members) : [];
 
   if (picks.length === 0) {
     const options = counterfactual(listings, filterMembers, trip.nights, members.length);
-    // No transaction: messages may call the AI. The one-pending-per-member index guards races.
-    const result = await openNegotiations({ query }, tripId, options, {
+    // AI messages are written here, outside any transaction.
+    const result = await prepareNegotiations({ query }, tripId, options, {
       personality: group.personality, extracted, listingsById, privateInputs: members,
     });
-    if (result.outcome === 'plan_b') {
-      await logEvent({ query }, tripId, actorUserId, 'plan_b', { nights: result.nights });
-      return {
-        status: trip.status,
-        proposals: [],
-        planB: { nights: result.nights },
-        message: `Plan B: no stay fits everyone for ${nightsText(trip.nights)}, but one does for ${nightsText(result.nights)}.`,
-      };
-    }
+
     if (result.outcome === 'negotiating') {
-      await logEvent({ query }, tripId, null, 'plan_negotiating');
-      return { status: trip.status, proposals: [], message: WORKING_MESSAGE };
+      // Saving questions makes this the active plan: older proposals and questions go away.
+      return saveRun(tripId, version, async (client, t) => {
+        await saveNegotiations(client, tripId, version, result.asks);
+        await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
+        await client.query(
+          `UPDATE trips SET active_version = $2, chosen_listing_id = NULL,
+                  status = CASE WHEN status = 'voting' THEN 'planning' ELSE status END
+            WHERE id = $1`,
+          [tripId, version],
+        );
+        await logEvent(client, tripId, null, 'plan_negotiating');
+        return { status: t.status === 'voting' ? 'planning' : t.status, proposals: [], message: WORKING_MESSAGE };
+      });
     }
-    if (result.outcome === 'exhausted') {
-      await logEvent({ query }, tripId, null, 'negotiation_exhausted');
-      return { status: trip.status, proposals: [], message: EXHAUSTED_MESSAGE };
-    }
-    await logEvent({ query }, tripId, actorUserId, 'plan_no_fit');
-    return { status: trip.status, proposals: [], message: NO_FIT_MESSAGE };
+
+    // Plan B / exhausted / no fit: only an event is written; the active plan is untouched.
+    return saveRun(tripId, version, async (client, t) => {
+      if (result.outcome === 'plan_b') {
+        await logEvent(client, tripId, actorUserId, 'plan_b', { nights: result.nights });
+        return {
+          status: t.status,
+          proposals: [],
+          planB: { nights: result.nights },
+          message: `Plan B: no stay fits everyone for ${nightsText(trip.nights)}, but one does for ${nightsText(result.nights)}.`,
+        };
+      }
+      if (result.outcome === 'exhausted') {
+        await logEvent(client, tripId, null, 'negotiation_exhausted');
+        return { status: t.status, proposals: [], message: EXHAUSTED_MESSAGE };
+      }
+      await logEvent(client, tripId, actorUserId, 'plan_no_fit');
+      return { status: t.status, proposals: [], message: NO_FIT_MESSAGE };
+    });
   }
 
   const totals = new Map(candidates.map((c) => [c.listingId, c.totalCents]));
-  await withTransaction(async (client) => {
-    const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [tripId]);
-    if (!PLANNABLE_STATUSES.includes(t.status)) throw new HttpError(409, 'This trip can no longer be planned');
+  const saved = await saveRun(tripId, version, async (client) => {
     await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
     for (const p of picks) {
       await client.query(
-        'INSERT INTO proposals (trip_id, listing_id, total_cents, reason_text) VALUES ($1, $2, $3, $4)',
-        [tripId, p.listingId, totals.get(p.listingId), p.reason],
+        'INSERT INTO proposals (trip_id, listing_id, total_cents, reason_text, plan_version) VALUES ($1, $2, $3, $4, $5)',
+        [tripId, p.listingId, totals.get(p.listingId), p.reason, version],
       );
     }
     // A plan exists, so any open asks are moot.
-    await client.query(`DELETE FROM negotiations WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
-    await client.query(`UPDATE trips SET status = 'voting', chosen_listing_id = NULL WHERE id = $1`, [tripId]);
+    await client.query(`UPDATE negotiations SET status = 'expired' WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
+    await client.query(
+      `UPDATE trips SET status = 'voting', chosen_listing_id = NULL, active_version = $2 WHERE id = $1`,
+      [tripId, version],
+    );
     await logEvent(client, tripId, actorUserId, 'plan', { proposalCount: picks.length });
+    return true;
   });
-
+  if (saved === STALE) return STALE;
   return { status: 'voting', proposals: await loadProposals(tripId) };
 }
 
@@ -202,13 +322,17 @@ planningRouter.post('/:id/plan', requireTripMember, requireOrganizer, planLimite
 // --- GET /:id/proposals
 
 planningRouter.get('/:id/proposals', requireTripMember, async (req, res) => {
-  const { rows } = await query('SELECT proposal_id FROM votes WHERE trip_id = $1 AND user_id = $2', [
-    req.tripId,
-    req.user.id,
-  ]);
+  const { rows } = await query(
+    `SELECT v.proposal_id FROM votes v
+       JOIN proposals p ON p.id = v.proposal_id
+       JOIN trips t ON t.id = p.trip_id AND t.active_version = p.plan_version
+      WHERE v.trip_id = $1 AND v.user_id = $2`,
+    [req.tripId, req.user.id],
+  );
   // Public: which proposal won (null until voting completes).
   const { rows: winner } = await query(
-    `SELECT p.id FROM proposals p JOIN trips t ON t.id = p.trip_id AND t.chosen_listing_id = p.listing_id
+    `SELECT p.id FROM proposals p
+       JOIN trips t ON t.id = p.trip_id AND t.chosen_listing_id = p.listing_id AND t.active_version = p.plan_version
       WHERE p.trip_id = $1`,
     [req.tripId],
   );
@@ -234,10 +358,11 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
     const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [req.tripId]);
     if (t.status !== 'voting') throw new HttpError(409, 'Voting is not open for this trip');
 
-    const { rows: prop } = await client.query('SELECT id FROM proposals WHERE id = $1 AND trip_id = $2', [
-      proposalId,
-      req.tripId,
-    ]);
+    const { rows: prop } = await client.query(
+      `SELECT p.id FROM proposals p JOIN trips t ON t.id = p.trip_id AND t.active_version = p.plan_version
+        WHERE p.id = $1 AND p.trip_id = $2`,
+      [proposalId, req.tripId],
+    );
     if (prop.length === 0) throw new HttpError(400, 'Unknown proposal');
 
     await client.query(
@@ -249,9 +374,11 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
 
     // Everyone still on the trip has voted?
     const { rows: [counts] } = await client.query(
-      `SELECT count(*) AS members, count(v.user_id) AS voted
+      `SELECT count(*) AS members, count(p.id) AS voted
          FROM trip_members tm
+         JOIN trips t ON t.id = tm.trip_id
          LEFT JOIN votes v ON v.trip_id = tm.trip_id AND v.user_id = tm.user_id
+         LEFT JOIN proposals p ON p.id = v.proposal_id AND p.plan_version = t.active_version
         WHERE tm.trip_id = $1 AND tm.status <> 'dropped'`,
       [req.tripId],
     );
@@ -263,7 +390,8 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
               (SELECT count(*) FROM votes v
                  JOIN trip_members tm ON tm.trip_id = v.trip_id AND tm.user_id = v.user_id AND tm.status <> 'dropped'
                 WHERE v.proposal_id = p.id) AS vote_count
-         FROM proposals p WHERE p.trip_id = $1
+         FROM proposals p JOIN trips t ON t.id = p.trip_id AND t.active_version = p.plan_version
+        WHERE p.trip_id = $1
         ORDER BY vote_count DESC, p.total_cents ASC, p.id ASC`,
       [req.tripId],
     );
@@ -274,11 +402,34 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
         ORDER BY tm.user_id`,
       [req.tripId],
     );
-    const capList = caps.map((c) => ({ userId: c.user_id, capCents: c.max_budget_cents }));
+    const overrides = await loadOverrides(client, req.tripId);
+    const payers = caps.map((c) => ({
+      userId: c.user_id, capCents: c.max_budget_cents, overrides: overrides.get(c.user_id) ?? [],
+    }));
 
     for (const p of ranked) {
-      const split = fairSplit(p.total_cents, capList);
+      // Caps for THIS listing: an override's accepted share where one exists, else the original budget.
+      const split = fairSplit(p.total_cents, capsForListing(payers, p.listing_id));
+      const consented = payers.flatMap((m) => m.overrides
+        .filter((o) => o.listingId === p.listing_id && Number.isInteger(o.maxShareCents))
+        .map((o) => ({ userId: m.userId, maxShareCents: o.maxShareCents })));
+      const withinConsent = split.feasible && consented.every((o) =>
+        split.shares.find((s) => s.userId === o.userId).amountCents <= o.maxShareCents);
+
+      if (!withinConsent && consented.length > 0) {
+        // The group picked a stay someone only agreed to at a price that no longer holds.
+        // Store nothing; that consent is void and must be given afresh.
+        await client.query('DELETE FROM shares WHERE trip_id = $1', [req.tripId]);
+        await client.query(
+          `UPDATE consent_overrides SET status = 'expired' WHERE trip_id = $1 AND listing_id = $2 AND status = 'active'`,
+          [req.tripId, p.listing_id],
+        );
+        await client.query(`UPDATE trips SET status = 'planning', chosen_listing_id = NULL WHERE id = $1`, [req.tripId]);
+        await logEvent(client, req.tripId, null, 'consent_recheck', { proposalId: p.id });
+        return { status: 'planning', message: RECHECK_MESSAGE };
+      }
       if (!split.feasible) continue;
+
       await client.query('DELETE FROM shares WHERE trip_id = $1', [req.tripId]);
       for (const s of split.shares) {
         await client.query('INSERT INTO shares (trip_id, user_id, amount_cents) VALUES ($1, $2, $3)', [
@@ -287,6 +438,11 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
           s.amountCents,
         ]);
       }
+      // A different stay won: consent given for other stays no longer applies.
+      await client.query(
+        `UPDATE consent_overrides SET status = 'expired' WHERE trip_id = $1 AND listing_id <> $2 AND status = 'active'`,
+        [req.tripId, p.listing_id],
+      );
       await client.query(
         `UPDATE trips SET status = 'committing', chosen_listing_id = $2 WHERE id = $1`,
         [req.tripId, p.listing_id],

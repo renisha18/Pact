@@ -25,13 +25,44 @@ export const avoidType = (a) => (typeof a === 'string' ? a : a.type);
 
 const EMPTY = { hardRequirements: [], avoidRoomTypes: [], softPreferences: [] };
 
+/**
+ * Consent overrides apply ONLY to their own listing.
+ *   budget:    this member's cap for that listing = accepted_max_share_cents
+ *   room_type: that 'preferred' avoid is lifted for that listing only; the cap there is
+ *              min(original cap, accepted share). 'strict' avoids are never lifted.
+ * @param {{capCents:number, overrides?:Array<{listingId:number, kind:'budget'|'room_type', maxShareCents:number|null, roomType:string|null}>}} m
+ */
+const overridesFor = (m, listingId) => (m.overrides ?? []).filter((o) => o.listingId === listingId);
+
+export function capForListing(m, listingId) {
+  let cap = m.capCents;
+  const own = overridesFor(m, listingId);
+  const budget = own.filter((o) => o.kind === 'budget');
+  if (budget.length > 0) cap = Math.min(...budget.map((o) => o.maxShareCents));
+  for (const o of own) if (o.kind === 'room_type' && Number.isInteger(o.maxShareCents)) cap = Math.min(cap, o.maxShareCents);
+  return cap;
+}
+
+/** fairSplit caps for one listing, overrides applied. */
+export const capsForListing = (members, listingId) =>
+  members.map((m) => ({ userId: m.userId, capCents: capForListing(m, listingId) }));
+
+/** Room types this member avoids AT this listing (preferred avoids lifted by an override for it). */
+function avoidedAt(m, p, listingId) {
+  const lifted = new Set(overridesFor(m, listingId).filter((o) => o.kind === 'room_type').map((o) => o.roomType));
+  return p.avoidRoomTypes
+    .filter((a) => !(typeof a !== 'string' && a.strength === 'preferred' && lifted.has(a.type)))
+    .map(avoidType);
+}
+
 function assertPositiveInt(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${label} must be a positive integer`);
 }
 
 /**
  * @param {Array<{id:number, price_per_night_cents:number, max_guests:number, room_type:string, amenities:string[], vibe_tags:string[]}>} listings
- * @param {Array<{userId:number, capCents:number, extracted?: {hardRequirements:string[], avoidRoomTypes:Array<{type:string, strength:'strict'|'preferred'}|string>, softPreferences:string[]} | null}>} members
+ * @param {Array<{userId:number, capCents:number, extracted?: {hardRequirements:string[], avoidRoomTypes:Array<{type:string, strength:'strict'|'preferred'}|string>, softPreferences:string[]} | null,
+ *   overrides?: Array<{listingId:number, kind:'budget'|'room_type', maxShareCents:number|null, roomType:string|null}>}>} members
  * @param {number} nights
  * @param {number} groupSize
  * @returns {Array<{listingId:number, totalCents:number, softMatchCount:number, facts:string[]}>}
@@ -42,21 +73,19 @@ export function filterListings(listings, members, nights, groupSize) {
   if (!Array.isArray(members) || members.length === 0) throw new TypeError('members must be a non-empty array');
 
   const prefs = members.map((m) => ({ ...EMPTY, ...(m.extracted ?? {}) }));
-  // Both 'strict' and 'preferred' avoids exclude. Plain strings (old cache) count as strict.
-  const avoided = new Set(prefs.flatMap((p) => p.avoidRoomTypes.map(avoidType)));
   const required = new Set(prefs.flatMap((p) => p.hardRequirements));
-  const caps = members.map((m) => ({ userId: m.userId, capCents: m.capCents }));
 
   const candidates = [];
   for (const listing of listings) {
     if (listing.max_guests < groupSize) continue;
-    if (avoided.has(listing.room_type)) continue;
+    // Both 'strict' and 'preferred' avoids exclude. Plain strings (old cache) count as strict.
+    if (members.some((m, i) => avoidedAt(m, prefs[i], listing.id).includes(listing.room_type))) continue;
 
     const features = new Set([...(listing.amenities ?? []), ...(listing.vibe_tags ?? [])]);
     if ([...required].some((r) => !features.has(r))) continue;
 
     const totalCents = listing.price_per_night_cents * nights;
-    if (!fairSplit(totalCents, caps).feasible) continue;
+    if (!fairSplit(totalCents, capsForListing(members, listing.id)).feasible) continue;
 
     const softMatchCount = prefs.reduce(
       (sum, p) => sum + p.softPreferences.filter((s) => features.has(s)).length,

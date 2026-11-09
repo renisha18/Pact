@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS trips (
   booking_deadline  TIMESTAMPTZ,
   created_by        INT REFERENCES users(id) ON DELETE SET NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Run claim counter (60s concurrency guard) vs. version of the last successful save.
+  plan_version        INT NOT NULL DEFAULT 0,
+  active_version      INT NOT NULL DEFAULT 0,
+  planning_started_at TIMESTAMPTZ,
   CHECK (end_date > start_date)
 );
 CREATE INDEX IF NOT EXISTS trips_group_idx ON trips(group_id);
@@ -84,7 +88,7 @@ CREATE TABLE IF NOT EXISTS private_inputs (
   preferences_text TEXT NOT NULL DEFAULT '',
   comfort_text     TEXT NOT NULL DEFAULT '',
   extracted_json   JSONB,
-  -- Room types the member agreed to in a negotiation. Only ever relaxes 'preferred' avoids.
+  -- Unused (superseded by consent_overrides); kept so old databases need no destructive migration.
   allowed_room_types TEXT[] NOT NULL DEFAULT '{}',
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (trip_id, user_id)
@@ -96,6 +100,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   listing_id  INT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   total_cents INT NOT NULL CHECK (total_cents >= 0),
   reason_text TEXT NOT NULL DEFAULT '',
+  plan_version INT NOT NULL DEFAULT 0, -- valid only when = trips.active_version
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS proposals_trip_idx ON proposals(trip_id);
@@ -174,8 +179,29 @@ CREATE TABLE IF NOT EXISTS negotiations (
   message     TEXT NOT NULL,
   status      TEXT NOT NULL DEFAULT 'pending'
               CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
+  plan_version     INT NOT NULL DEFAULT 0, -- valid only when = trips.active_version
+  input_updated_at TIMESTAMPTZ,            -- member's private_inputs.updated_at when asked
+  responded_at     TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS negotiations_trip_idx ON negotiations(trip_id, user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS negotiations_one_pending_idx
   ON negotiations(trip_id, user_id) WHERE status = 'pending';
+
+-- PRIVATE: consent from an accepted negotiation, scoped to ONE listing.
+CREATE TABLE IF NOT EXISTS consent_overrides (
+  id                      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  trip_id                 INT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  user_id                 INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  negotiation_id          INT NOT NULL REFERENCES negotiations(id) ON DELETE CASCADE,
+  plan_version            INT NOT NULL,
+  listing_id              INT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  kind                    TEXT NOT NULL CHECK (kind IN ('budget', 'room_type')),
+  accepted_max_share_cents INT CHECK (accepted_max_share_cents >= 0),
+  room_type               TEXT,
+  status                  TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired')),
+  accepted_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (kind <> 'budget' OR accepted_max_share_cents IS NOT NULL),
+  CHECK (kind <> 'room_type' OR room_type IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS consent_overrides_trip_idx ON consent_overrides(trip_id, status);

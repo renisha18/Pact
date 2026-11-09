@@ -92,10 +92,15 @@ tripsRouter.put('/:id/private-input', requireTripMember, validateBody(privateInp
          SET max_budget_cents = EXCLUDED.max_budget_cents,
              preferences_text = EXCLUDED.preferences_text,
              comfort_text     = EXCLUDED.comfort_text,
-             extracted_json   = NULL,
+             -- extracted_json is kept: each field's cache is keyed by its own text.
              updated_at       = now()
        RETURNING max_budget_cents, preferences_text, comfort_text, updated_at`,
       [req.tripId, userId, maxBudgetCents, preferencesText, comfortText],
+    );
+    // Consent was given against the old input: it no longer applies.
+    await client.query(
+      `UPDATE consent_overrides SET status = 'expired' WHERE trip_id = $1 AND user_id = $2 AND status = 'active'`,
+      [req.tripId, userId],
     );
     // Any pending ask was computed from the old input: it no longer applies.
     await client.query(

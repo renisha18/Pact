@@ -205,9 +205,13 @@ export function NegotiationCard({ tripId, refreshKey, onResolved }) {
       const res = await api(`/api/trips/${tripId}/negotiations/${data.id}`, { method: 'POST', body: { response } });
       if (response === 'more_time') setThanks('No rush. This stays here whenever you’re ready.');
       else if (response === 'reject') setThanks('All good, thanks for letting Pact know.');
-      else if (response === 'accept') setThanks('Thank you! Pact is re-planning now.');
+      else if (response === 'accept') {
+        setThanks(data.kind === 'raiseBudget'
+          ? `Applies only to ${data.stay.name}, up to ${formatUsd(data.newShareCents)}. Pact is re-planning now.`
+          : 'Thank you! Pact is re-planning now.');
+      }
       await reload();
-      if (response !== 'more_time' && response !== 'another') onResolved?.(res.plan?.message ?? null);
+      if (response !== 'more_time' && response !== 'another') onResolved?.(res.plan?.message ?? res.message ?? null);
     } catch (err) {
       setActionError(err.status === 409 ? 'This one has moved on. Refresh for the latest.' : err.message);
     } finally {
