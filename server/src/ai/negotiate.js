@@ -1,7 +1,8 @@
 // Writes the private note Pact sends ONE member when a small change on their
 // side would unlock a stay. The AI sees ONLY that member's own extracted tags
 // and the server-computed effect (amounts are pre-formatted here; the AI never
-// computes money). The note is leak-checked against every OTHER member's
+// computes money). Any dollar amount in the note must be one the server gave it,
+// and the note is leak-checked against every OTHER member's
 // private input and falls back to a template. Nothing here is logged.
 import { generateText } from './llm.js';
 import { leakCheck } from '../lib/leakCheck.js';
@@ -51,10 +52,34 @@ Do not say that saying no is fine; that line is added separately.`;
 
 const neutralize = (s) => String(s ?? '').replace(/<\/?\s*(member_items|effect)\s*>/gi, '');
 
+const DECIMAL = '\u0000'; // stands in for the '.' in "$55.00" so it isn't a sentence end
+
 function limit(text) {
-  const parts = String(text).replace(/\s+/g, ' ').trim().match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g) ?? [];
-  return parts.slice(0, MAX_SENTENCES).map((p) => p.trim()).join(' ').slice(0, MAX_CHARS);
+  const flat = String(text).replace(/\s+/g, ' ').trim().replace(/(\d)\.(\d)/g, `$1${DECIMAL}$2`);
+  const parts = flat.match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g) ?? [];
+  return parts.slice(0, MAX_SENTENCES).map((p) => p.trim()).join(' ').slice(0, MAX_CHARS).replaceAll(DECIMAL, '.');
 }
+
+// "$55", "$1,234.50", "55 dollars", "USD 55" -> cents. Anything else is not an amount.
+const AMOUNT_RE = /\$\s*(\d[\d,]*(?:\.\d+)?)|(?:usd|us\$)\s*(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s*(?:dollars?|bucks|usd)\b/gi;
+
+/** Every dollar amount in the text, in cents (rounded). */
+export function dollarAmounts(text) {
+  return [...String(text).matchAll(AMOUNT_RE)].map((m) =>
+    Math.round(Number((m[1] ?? m[2] ?? m[3]).replace(/,/g, '')) * 100));
+}
+
+/** The only amounts a note may state: the server-computed ask and share. */
+export function allowedAmounts(option) {
+  const out = [option.newShareCents];
+  if (option.change.kind === 'raiseBudget') out.push(option.change.byCents);
+  return out.filter(Number.isInteger);
+}
+
+const amountsOk = (text, option) => {
+  const allowed = new Set(allowedAmounts(option));
+  return dollarAmounts(text).every((c) => allowed.has(c));
+};
 
 export function templateMessage(option, stay, otherPrivateInputs) {
   const wishes = option.matchesOwnWishes.length > 0
@@ -92,6 +117,6 @@ ${neutralize(JSON.stringify({
   } catch {
     // template below
   }
-  if (!body || !leakCheck(body, otherPrivateInputs).safe) body = templateMessage(option, stay, otherPrivateInputs);
+  if (!body || !amountsOk(body, option) || !leakCheck(body, otherPrivateInputs).safe) body = templateMessage(option, stay, otherPrivateInputs);
   return `${body} ${closing(option.change)}`;
 }

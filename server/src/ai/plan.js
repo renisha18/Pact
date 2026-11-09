@@ -1,8 +1,9 @@
-// Picks 3 stays from pre-filtered candidates and writes a short reason for each.
-// The AI only ever sees LISTING data and candidate facts: never budgets, caps,
-// prices, member names or member text. It never computes money. Every reason
-// goes through leakCheck; unsafe ones are regenerated once, then templated.
-// Nothing here is logged.
+// Chooses the top 3 stays DETERMINISTICALLY (softMatchCount desc, totalCents asc,
+// listingId asc) and asks the AI only to write a short reason for each. The AI
+// never selects stays. It only ever sees LISTING data and candidate facts: never
+// budgets, caps, prices, member names or member text. It never computes money.
+// Every reason goes through leakCheck; missing or unsafe reasons are regenerated
+// once (unsafe only), then templated. Nothing here is logged.
 import { z } from 'zod';
 import { generateJson } from './llm.js';
 import { extractPreferences } from './extract.js';
@@ -19,8 +20,7 @@ const TONES = {
 const picksSchema = z.object({
   picks: z
     .array(z.object({ listingId: z.number().int(), reason: z.string().trim().min(1).max(400) }))
-    .min(1)
-    .max(MAX_PICKS),
+    .max(MAX_PICKS * 2),
 });
 const reasonSchema = z.object({ reason: z.string().trim().min(1).max(400) });
 
@@ -33,7 +33,7 @@ function pickPrompt(personality) {
   return `You help a group of friends choose where to stay on a trip.
 Tone: ${TONES[personality] ?? TONES.chill}.
 ${RULES}
-Pick the ${MAX_PICKS} best stays (or all of them if there are fewer) and write a reason for each.
+Write a reason for EVERY stay in the data, keyed by its listingId. Do not add or drop stays.
 Output JSON: {"picks": [{"listingId": <id from the data>, "reason": "<reason>"}]}`;
 }
 
@@ -84,42 +84,43 @@ export async function extractAll(members) {
   return out;
 }
 
+/** Deterministic ranking: softMatchCount desc, totalCents asc, listingId asc. */
+export function topProposals(candidates, n = MAX_PICKS) {
+  return [...candidates]
+    .sort((a, b) => b.softMatchCount - a.softMatchCount || a.totalCents - b.totalCents || a.listingId - b.listingId)
+    .slice(0, n);
+}
+
 /**
- * @param {Array<{listingId:number, facts:string[]}>} candidates  top candidates, best first
+ * @param {Array<{listingId:number, totalCents:number, softMatchCount:number, facts:string[]}>} candidates
  * @param {Map<number, object>} listingsById
  * @param {string} personality
  * @param {Array<object>} privateInputs  rows for leakCheck only; never sent to the AI
- * @returns {Promise<Array<{listingId:number, reason:string}>>}
+ * @returns {Promise<Array<{listingId:number, reason:string}>>} the top 3, in ranked order
  */
 export async function pickAndExplain(candidates, listingsById, personality, privateInputs) {
-  const byId = new Map(candidates.map((c) => [c.listingId, c]));
-  const want = Math.min(MAX_PICKS, candidates.length);
+  const chosen = topProposals(candidates).map((c) => ({ c, listing: listingsById.get(c.listingId), reason: null }));
+  if (chosen.length === 0) return [];
 
-  let aiPicks = [];
+  let aiReasons = new Map();
   try {
-    const stays = candidates.map((c) => aiStay(c, listingsById.get(c.listingId)));
-    aiPicks = (await generateJson(pickPrompt(personality), wrap(stays), picksSchema, { task: 'pick' })).picks;
+    const stays = chosen.map(({ c, listing }) => aiStay(c, listing));
+    const { picks } = await generateJson(pickPrompt(personality), wrap(stays), picksSchema, { task: 'pick' });
+    // Map by listingId; ids the AI invented are ignored, first reason per id wins.
+    for (const p of picks) if (!aiReasons.has(p.listingId)) aiReasons.set(p.listingId, p.reason);
   } catch {
-    // Fall through to the ranked candidates with template reasons.
-  }
-
-  const chosen = [];
-  for (const p of aiPicks) {
-    if (chosen.length >= want) break;
-    if (byId.has(p.listingId) && !chosen.some((x) => x.listingId === p.listingId)) {
-      chosen.push({ listingId: p.listingId, reason: p.reason });
-    }
-  }
-  for (const c of candidates) {
-    if (chosen.length >= want) break;
-    if (!chosen.some((x) => x.listingId === c.listingId)) chosen.push({ listingId: c.listingId, reason: null });
+    aiReasons = new Map();
   }
 
   for (const pick of chosen) {
-    const c = byId.get(pick.listingId);
-    const listing = listingsById.get(pick.listingId);
-    if (pick.reason && leakCheck(pick.reason, privateInputs).safe) continue;
-    if (pick.reason) {
+    const { c, listing } = pick;
+    const first = aiReasons.get(c.listingId);
+    if (first && leakCheck(first, privateInputs).safe) {
+      pick.reason = first;
+      continue;
+    }
+    if (first) {
+      // Unsafe: regenerate once.
       try {
         const { reason } = await generateJson(singlePrompt(personality), wrap([aiStay(c, listing)]), reasonSchema, {
           task: 'reason',
@@ -134,5 +135,5 @@ export async function pickAndExplain(candidates, listingsById, personality, priv
     }
     pick.reason = templateReason(c, listing, privateInputs);
   }
-  return chosen;
+  return chosen.map(({ c, reason }) => ({ listingId: c.listingId, reason }));
 }

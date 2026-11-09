@@ -9,6 +9,7 @@ export const WORKING_MESSAGE = 'Pact is working something out privately…';
 export const EXHAUSTED_MESSAGE = "Pact couldn't find a plan that fits everyone — try changing the trip.";
 
 const DECLINED = ['rejected', 'expired'];
+const isBudget = (o) => o.change.kind === 'raiseBudget';
 const optionKey = (o) => `${o.change.kind}:${o.change.roomType ?? ''}`;
 
 /** The stored change: everything the owner needs, nothing about anyone else. */
@@ -77,12 +78,33 @@ export async function openNegotiations(db, tripId, options, ctx) {
     perMember.get(o.userId).push(o);
   }
 
-  const chosen = [...perMember.entries()].slice(0, MAX_NEGOTIATING_MEMBERS);
+  // Every budget option covers the WHOLE shortfall, so at most one member is asked
+  // for money: later members get a non-budget ask or are skipped.
+  const chosen = [];
+  let budgetAsked = false;
+  for (const [userId, opts] of perMember) {
+    if (chosen.length >= MAX_NEGOTIATING_MEMBERS) break;
+    const usable = budgetAsked ? opts.filter((o) => !isBudget(o)) : opts;
+    if (usable.length === 0) continue;
+    if (isBudget(usable[0])) budgetAsked = true;
+    chosen.push([userId, usable]);
+  }
   for (const [userId, [option, alternative]] of chosen) {
     await insertNegotiation(db, { tripId, userId, option, alternative, isAlternative: false, ctx });
   }
   if (chosen.length > 0) return { outcome: 'negotiating' };
   return { outcome: declined.length > 0 ? 'exhausted' : 'none' };
+}
+
+/** True if someone OTHER than userId has a pending budget ask on this trip. */
+export async function otherBudgetAskPending(db, tripId, userId) {
+  const { rows } = await db.query(
+    `SELECT 1 FROM negotiations
+      WHERE trip_id = $1 AND user_id <> $2 AND status = 'pending' AND change_json->'change'->>'kind' = 'raiseBudget'
+      LIMIT 1`,
+    [tripId, userId],
+  );
+  return rows.length > 0;
 }
 
 /**

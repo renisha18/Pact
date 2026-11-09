@@ -97,6 +97,11 @@ tripsRouter.put('/:id/private-input', requireTripMember, validateBody(privateInp
        RETURNING max_budget_cents, preferences_text, comfort_text, updated_at`,
       [req.tripId, userId, maxBudgetCents, preferencesText, comfortText],
     );
+    // Any pending ask was computed from the old input: it no longer applies.
+    await client.query(
+      `UPDATE negotiations SET status = 'expired' WHERE trip_id = $1 AND user_id = $2 AND status = 'pending'`,
+      [req.tripId, userId],
+    );
     const { rows: [tm] } = await client.query(
       `UPDATE trip_members SET status = 'submitted', commitment_type = $3, roast_level = $4
         WHERE trip_id = $1 AND user_id = $2

@@ -1,5 +1,5 @@
 // Plan -> proposals -> votes -> shares. All money is computed here (server-side,
-// integer cents); the AI only picks among candidates and writes reasons.
+// integer cents); the top 3 are chosen deterministically; the AI only writes reasons.
 import { Router } from 'express';
 import { z } from 'zod';
 import { rateLimit } from 'express-rate-limit';

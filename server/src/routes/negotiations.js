@@ -8,7 +8,7 @@ import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
 import { negotiationSelf } from '../lib/views.js';
-import { insertNegotiation, EXHAUSTED_MESSAGE } from '../lib/negotiations.js';
+import { insertNegotiation, otherBudgetAskPending, EXHAUSTED_MESSAGE } from '../lib/negotiations.js';
 import { runPlan, logEvent, sendAiUnavailable, PLANNABLE_STATUSES } from './planning.js';
 import { AiError } from '../ai/llm.js';
 
@@ -90,7 +90,10 @@ negotiationsRouter.post('/:id/negotiations/:nid', requireTripMember, validateBod
     return res.json({ response: 'more_time' });
   }
 
-  if (response === 'reject' || (response === 'another' && (c.isAlternative || !c.alternative))) {
+  // One budget ask per shortfall: a budget alternative is dropped while someone else's is open.
+  const noAlternative = c.isAlternative || !c.alternative ||
+    (c.alternative.change.kind === 'raiseBudget' && await otherBudgetAskPending({ query }, req.tripId, req.user.id));
+  if (response === 'reject' || (response === 'another' && noAlternative)) {
     const notice = await expireAndMaybeExhaust(req.tripId, nid);
     return res.json({ response: 'reject', ...(notice ? { notice } : {}) });
   }

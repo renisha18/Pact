@@ -97,7 +97,9 @@ function harmlessProblems(item, answer, proposals) {
   if (item.expect === 'votes') {
     if (proposals.length === 0) return /\b(no|none|not yet|haven'?t)\b/i.test(answer) ? [] : ['no proposals but the answer did not say so'];
     if (!/\b(\d+|zero|no votes|one|two|three|four)\b/i.test(answer)) return ['gave no vote counts'];
-    if (named.length === 0) return ['did not name any option'];
+    // Either per-option counts (names an option) or a statement covering all of them.
+    const covering = /\b(tie|tied|all|each|every|both|none|no one|nobody|no votes)\b/i.test(answer);
+    if (named.length === 0 && !covering) return ['did not state the vote counts or a tie'];
   }
   return [];
 }
