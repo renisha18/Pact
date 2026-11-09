@@ -49,6 +49,7 @@ const TRIP_STATUS = {
   planning: 'bg-mint-dark text-pine',
   voting: 'bg-coral/15 text-coral-dark',
   committing: 'bg-coral text-cloud',
+  needs_attention: 'bg-coral/15 text-coral-dark ring-1 ring-coral',
   booked: 'bg-pine text-cloud',
   cancelled: 'bg-pine-soft/15 text-pine-soft line-through',
 };

@@ -200,7 +200,7 @@ function MyShareCard({ tripId }) {
 }
 
 /** Proposals while voting; winner + private share once voting is done. */
-export function Proposals({ tripId, tripStatus, canVote, isOrganizer, onChanged, onReplan }) {
+export function Proposals({ tripId, tripStatus, canVote, isOrganizer, onChanged, onReplan, hideShare = false }) {
   const { data, error, loading, reload } = useApi(`/api/trips/${tripId}/proposals`);
   const [voting, setVoting] = useState(false);
   const [voteError, setVoteError] = useState(null);
@@ -238,9 +238,9 @@ export function Proposals({ tripId, tripStatus, canVote, isOrganizer, onChanged,
     return (
       <section aria-labelledby="winner-title">
         <h2 id="winner-title" className="text-lg font-bold">🎉 The group picked</h2>
-        <div className="mt-2 grid gap-4 md:grid-cols-[1fr_16rem]">
+        <div className={`mt-2 grid gap-4 ${hideShare ? '' : 'md:grid-cols-[1fr_16rem]'}`}>
           <ProposalCard p={winner} winner canVote={false} />
-          <div className="md:mt-3"><MyShareCard tripId={tripId} /></div>
+          {!hideShare && <div className="md:mt-3"><MyShareCard tripId={tripId} /></div>}
         </div>
       </section>
     );

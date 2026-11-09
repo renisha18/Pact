@@ -8,6 +8,7 @@ import {
   Page, Loading, ErrorNote, NotFoundCard, TripStatusChip, MemberStatusChip, Avatar, btn, card, input, label,
 } from '../components/ui.jsx';
 import { PixelLock, PlanPanel, Proposals, AskPact } from '../components/Planning.jsx';
+import { CommitPanel } from '../components/Commit.jsx';
 
 const COMMIT_OPTIONS = [
   { value: 'hold', emoji: '🔒', title: 'Hold now', body: 'Place a PayPal hold for my share as soon as we agree.' },
@@ -17,7 +18,8 @@ const COMMIT_OPTIONS = [
 const ROAST_LEVELS = ['off', 'mild', 'savage'];
 const EDITABLE_TRIP = new Set(['collecting', 'planning']);
 const LOCKED_MEMBER = new Set(['committed', 'dropped']);
-const HAS_PROPOSALS = new Set(['voting', 'committing', 'booked']);
+const HAS_PROPOSALS = new Set(['voting', 'committing', 'needs_attention', 'booked']);
+const COMMIT_STAGE = new Set(['committing', 'needs_attention', 'booked']);
 
 const centsToUsd = (cents) => (cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2));
 
@@ -164,6 +166,7 @@ export default function Trip() {
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState(null);
   const [planMessage, setPlanMessage] = useState(null);
+  const [notice, setNotice] = useState(null);
 
   async function plan() {
     setPlanning(true);
@@ -231,6 +234,12 @@ export default function Trip() {
       </div>
 
       <div className="mt-8 space-y-8">
+        {notice && (
+          <p className="flex items-center justify-between gap-3 rounded-xl bg-cloud px-4 py-3 text-sm ring-1 ring-mint-dark" role="status">
+            <span>{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} className="text-pine-soft hover:text-pine" aria-label="Dismiss">✕</button>
+          </p>
+        )}
         {(EDITABLE_TRIP.has(trip.status) || planning) && (
           <PlanPanel isOrganizer={isOrganizer} waitingCount={waitingCount} planning={planning}
             error={planError} message={planMessage} onPlan={plan} />
@@ -239,8 +248,11 @@ export default function Trip() {
           <>
             {planError && <p role="alert" className="rounded-xl bg-coral/10 px-3 py-2 text-sm text-coral-dark">{planError}</p>}
             <Proposals tripId={trip.id} tripStatus={trip.status} canVote={me?.status !== 'dropped'}
-              isOrganizer={isOrganizer} onChanged={reload} onReplan={plan} />
+              isOrganizer={isOrganizer} onChanged={reload} onReplan={plan} hideShare={COMMIT_STAGE.has(trip.status)} />
           </>
+        )}
+        {COMMIT_STAGE.has(trip.status) && me?.status !== 'dropped' && (
+          <CommitPanel trip={trip} isOrganizer={isOrganizer} onTripChanged={reload} onNotice={setNotice} />
         )}
         <AskPact tripId={trip.id} />
       </div>

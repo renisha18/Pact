@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS trips (
   end_date          DATE NOT NULL,
   nights            INT NOT NULL CHECK (nights > 0),
   status            TEXT NOT NULL DEFAULT 'collecting'
-                    CHECK (status IN ('collecting', 'planning', 'voting', 'committing', 'booked', 'cancelled')),
+                    CHECK (status IN ('collecting', 'planning', 'voting', 'committing', 'needs_attention', 'booked', 'cancelled')),
   chosen_listing_id INT REFERENCES listings(id) ON DELETE SET NULL,
   booking_deadline  TIMESTAMPTZ,
   created_by        INT REFERENCES users(id) ON DELETE SET NULL,
@@ -135,9 +135,10 @@ CREATE TABLE IF NOT EXISTS payments (
   paypal_order_id         TEXT,
   paypal_authorization_id TEXT,
   paypal_capture_id       TEXT,
+  covers_user_id          INT REFERENCES users(id) ON DELETE SET NULL, -- cover_hold only: whose share this covers
   amount_cents            INT NOT NULL CHECK (amount_cents > 0),
   status                  TEXT NOT NULL DEFAULT 'created'
-                          CHECK (status IN ('created', 'approved', 'authorized', 'captured', 'voided', 'paid', 'failed')),
+                          CHECK (status IN ('created', 'approved', 'authorized', 'captured', 'voided', 'paid', 'failed', 'refunded')),
   due_date                DATE,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()

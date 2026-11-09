@@ -122,3 +122,15 @@ export function proposalPublic(row) {
     voteCount: Number(row.vote_count),
   };
 }
+
+/** PRIVATE: a user's own payment row. Never includes PayPal ids beyond the order id they approve. */
+export function paymentSelf(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    amountCents: row.amount_cents,
+    status: row.status,
+    orderId: row.paypal_order_id,
+    updatedAt: row.updated_at,
+  };
+}
