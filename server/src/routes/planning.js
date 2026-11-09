@@ -250,28 +250,27 @@ async function planRun(tripId, actorUserId, version) {
       personality: group.personality, extracted, listingsById, privateInputs: members,
     });
 
-    if (result.outcome === 'negotiating') {
-      // Saving questions makes this the active plan: older proposals and questions go away.
-      return saveRun(tripId, version, async (client, t) => {
-        await saveNegotiations(client, tripId, version, result.asks);
-        await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
-        await client.query(
-          `UPDATE trips SET active_version = $2, chosen_listing_id = NULL,
-                  status = CASE WHEN status = 'voting' THEN 'planning' ELSE status END
-            WHERE id = $1`,
-          [tripId, version],
-        );
-        await logEvent(client, tripId, null, 'plan_negotiating');
-        return { status: t.status === 'voting' ? 'planning' : t.status, proposals: [], message: WORKING_MESSAGE };
-      });
-    }
-
-    // Plan B / exhausted / no fit: only an event is written; the active plan is untouched.
+    // Any no-fit outcome becomes the active plan: stale proposals leave the screen and,
+    // if voting was open, the trip goes back to planning. Questions (if any) are saved too.
     return saveRun(tripId, version, async (client, t) => {
+      if (result.outcome === 'negotiating') await saveNegotiations(client, tripId, version, result.asks);
+      else await client.query(`UPDATE negotiations SET status = 'expired' WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
+      await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
+      await client.query(
+        `UPDATE trips SET active_version = $2, chosen_listing_id = NULL,
+                status = CASE WHEN status = 'voting' THEN 'planning' ELSE status END
+          WHERE id = $1`,
+        [tripId, version],
+      );
+      const status = t.status === 'voting' ? 'planning' : t.status;
+      if (result.outcome === 'negotiating') {
+        await logEvent(client, tripId, null, 'plan_negotiating');
+        return { status, proposals: [], message: WORKING_MESSAGE };
+      }
       if (result.outcome === 'plan_b') {
         await logEvent(client, tripId, actorUserId, 'plan_b', { nights: result.nights });
         return {
-          status: t.status,
+          status,
           proposals: [],
           planB: { nights: result.nights },
           message: `Plan B: no stay fits everyone for ${nightsText(trip.nights)}, but one does for ${nightsText(result.nights)}.`,
@@ -279,10 +278,10 @@ async function planRun(tripId, actorUserId, version) {
       }
       if (result.outcome === 'exhausted') {
         await logEvent(client, tripId, null, 'negotiation_exhausted');
-        return { status: t.status, proposals: [], message: EXHAUSTED_MESSAGE };
+        return { status, proposals: [], message: EXHAUSTED_MESSAGE };
       }
       await logEvent(client, tripId, actorUserId, 'plan_no_fit');
-      return { status: t.status, proposals: [], message: NO_FIT_MESSAGE };
+      return { status, proposals: [], message: NO_FIT_MESSAGE };
     });
   }
 
