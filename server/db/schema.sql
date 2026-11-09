@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS groups (
   id           INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   name         TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
   emoji        TEXT NOT NULL DEFAULT '🏝️',
+  description  TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 160),
   personality  TEXT NOT NULL DEFAULT 'chill'
                CHECK (personality IN ('chill', 'wholesome', 'savage')),
   invite_token TEXT NOT NULL UNIQUE,

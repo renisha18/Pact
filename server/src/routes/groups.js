@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { query, withTransaction } from '../db.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { validateBody } from '../lib/validate.js';
+import { HttpError } from '../lib/httpError.js';
 import { assertGroupMember, parseId } from '../lib/membership.js';
+import { actionsFor } from '../lib/actions.js';
 import {
   groupSummary, groupDetail, groupMember, tripSummary, tripPublic, inviteUrl,
 } from '../lib/views.js';
@@ -13,9 +15,15 @@ export const groupsRouter = Router();
 groupsRouter.use(requireAuth);
 
 groupsRouter.get('/', async (req, res) => {
+  const actionGroups = new Set((await actionsFor(req.user.id)).map((a) => a.groupId));
   const { rows } = await query(
-    `SELECT g.id, g.name, g.emoji,
+    `SELECT g.id, g.name, g.emoji, g.description,
             (SELECT count(*) FROM group_members m WHERE m.group_id = g.id) AS member_count,
+            (SELECT COALESCE(array_agg(a.avatar_emoji ORDER BY a.ord), '{}') FROM (
+               SELECT u.avatar_emoji, row_number() OVER (ORDER BY (m.role = 'organizer') DESC, m.joined_at, u.id) AS ord
+                 FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = g.id
+                 ORDER BY ord LIMIT 5) a) AS member_avatars,
+            lt.title AS latest_trip_title, lt.status AS latest_trip_status,
             nt.id AS next_trip_id, nt.title AS next_trip_title,
             nt.status AS next_trip_status, nt.start_date AS next_trip_start_date
        FROM groups g
@@ -27,10 +35,14 @@ groupsRouter.get('/', async (req, res) => {
           ORDER BY t.start_date, t.id
           LIMIT 1
        ) nt ON true
+       LEFT JOIN LATERAL (
+         SELECT t.title, t.status FROM trips t WHERE t.group_id = g.id
+          ORDER BY t.created_at DESC, t.id DESC LIMIT 1
+       ) lt ON true
       ORDER BY g.created_at DESC, g.id DESC`,
     [req.user.id],
   );
-  res.json(rows.map(groupSummary));
+  res.json(rows.map((r) => groupSummary(r, actionGroups.has(r.id))));
 });
 
 const createGroupSchema = z.strictObject({
@@ -45,7 +57,7 @@ groupsRouter.post('/', validateBody(createGroupSchema), async (req, res) => {
     const { rows: [g] } = await client.query(
       `INSERT INTO groups (name, emoji, personality, invite_token, created_by)
        VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, emoji, personality, created_at`,
+       RETURNING id, name, emoji, description, personality, created_at`,
       [name, emoji, personality, randomBytes(24).toString('base64url'), req.user.id],
     );
     await client.query(
@@ -63,7 +75,7 @@ groupsRouter.get('/:id', async (req, res) => {
 
   const [groupRes, membersRes, tripsRes] = await Promise.all([
     query(
-      'SELECT id, name, emoji, personality, invite_token, created_at FROM groups WHERE id = $1',
+      'SELECT id, name, emoji, description, personality, invite_token, created_at FROM groups WHERE id = $1',
       [groupId],
     ),
     query(
@@ -88,6 +100,31 @@ groupsRouter.get('/:id', async (req, res) => {
     trips: tripsRes.rows.map(tripSummary),
     inviteUrl: inviteUrl(group.invite_token),
   });
+});
+
+const updateGroupSchema = z.strictObject({
+  name: z.string().trim().min(1).max(40),
+  emoji: z.string().trim().min(1).max(16),
+  description: z.string().trim().max(160),
+  personality: z.enum(['chill', 'wholesome', 'savage']),
+});
+
+// Membership (404) and organizer (403) are checked before the body is validated.
+groupsRouter.patch('/:id', async (req, _res, next) => {
+  const groupId = parseId(req.params.id);
+  const { role } = await assertGroupMember(groupId, req.user.id);
+  if (role !== 'organizer') throw new HttpError(403, 'Only the organizer can change these');
+  req.groupId = groupId;
+  next();
+}, validateBody(updateGroupSchema), async (req, res) => {
+  const { name, emoji, description, personality } = req.body;
+  const { rows: [g] } = await query(
+    `UPDATE groups SET name = $2, emoji = $3, description = $4, personality = $5
+      WHERE id = $1
+      RETURNING id, name, emoji, description, personality, created_at`,
+    [req.groupId, name, emoji, description, personality],
+  );
+  res.json(groupDetail(g));
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;

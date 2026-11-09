@@ -304,7 +304,7 @@ commitRouter.post('/:id/commit/payment/confirm', requireTripMember, requireActiv
   validateBody(confirmSchema), async (req, res) => res.json(await confirmOrder(req, 'payment')));
 
 /** PRIVATE: next need_time share nobody is securing (excluding the caller). Never return its user_id to a client. */
-async function findUncovered(db, tripId, excludeUserId) {
+export async function findUncovered(db, tripId, excludeUserId) {
   const { rows } = await db.query(
     `SELECT s.user_id, s.amount_cents FROM shares s
        JOIN trip_members tm ON tm.trip_id = s.trip_id AND tm.user_id = s.user_id

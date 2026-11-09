@@ -27,7 +27,7 @@ export function todayIso() {
 export function safeNext(value) {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\')
     ? value
-    : '/';
+    : '/dashboard';
 }
 
 /** Integer cents → "$1,234" or "$1,234.50" (display only; the server computes every amount). */

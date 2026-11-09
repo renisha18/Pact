@@ -1,0 +1,16 @@
+# Static client for Render. The rewrite makes deep links (e.g. /trips/3/commit) refresh correctly.
+# Add the API as a separate web service (or keep your existing one).
+services:
+  - type: web
+    name: pact-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

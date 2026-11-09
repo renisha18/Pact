@@ -29,7 +29,7 @@ tripsRouter.get('/:id', requireTripMember, async (req, res) => {
     req.trip.group_id,
     req.user.id,
   ]);
-  res.json({ trip: tripPublic(req.trip), members: rows.map(tripMemberPublic), myRole: me.role });
+  res.json({ trip: tripPublic(req.trip), members: rows.map(tripMemberPublic), myRole: me.role, myStatus: req.trip.member_status });
 });
 
 // --- Private input: every query is scoped to req.user.id; never by a client-supplied user id.

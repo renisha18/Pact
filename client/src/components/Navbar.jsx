@@ -4,10 +4,10 @@ import { api } from '../api.js';
 import { useAuth } from '../lib/auth.jsx';
 import TentIcon from './TentIcon.jsx';
 
-const pill = 'inline-flex items-center rounded-full font-medium transition-colors';
+export const pill = 'inline-flex items-center rounded-full font-medium transition-colors';
 
 /** Organizer-only, and only when the server runs with DEMO_MODE=true (otherwise renders nothing). */
-function DemoReset({ userId }) {
+export function DemoReset({ userId }) {
   const [canReset, setCanReset] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -49,7 +49,7 @@ export default function Navbar() {
   return (
     <header className="sticky top-0 z-20 border-b border-mint-dark bg-mint/90 backdrop-blur">
       <nav className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
-        <Link to="/" className="flex shrink-0 items-center gap-2 text-lg font-bold">
+        <Link to={user ? '/dashboard' : '/'} className="flex shrink-0 items-center gap-2 text-lg font-bold">
           <TentIcon />
           Pact
         </Link>
@@ -60,7 +60,7 @@ export default function Navbar() {
           </Link>
           {user && (
             <NavLink
-              to="/groups"
+              to="/dashboard"
               className={({ isActive }) => (isActive ? 'text-pine' : 'text-pine-soft hover:text-pine')}
             >
               Groups
@@ -69,12 +69,6 @@ export default function Navbar() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 md:ml-0">
-          <span
-            className={`${pill} border border-water bg-cloud px-2.5 py-1 text-[10px] tracking-wide text-pine-soft`}
-            title="PayPal sandbox only. No real money moves."
-          >
-            SANDBOX<span className="hidden sm:inline">&nbsp;· no real money</span>
-          </span>
 
           {loading ? (
             <span className="h-8 w-20" aria-hidden="true" />

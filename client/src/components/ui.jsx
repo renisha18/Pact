@@ -16,6 +16,10 @@ export function Page({ children, narrow = false }) {
   return <main className={`mx-auto px-4 py-8 sm:py-12 ${narrow ? 'max-w-xl' : 'max-w-4xl'}`}>{children}</main>;
 }
 
+export function Skeleton({ className = 'h-24' }) {
+  return <div className={`animate-pulse rounded-2xl bg-mint-dark/60 ${className}`} aria-hidden="true" />;
+}
+
 export function Loading() {
   return (
     <div className="flex justify-center py-20" role="status">
@@ -39,7 +43,7 @@ export function NotFoundCard({ what = 'page' }) {
     <div className={`${card} text-center`}>
       <p className="font-bold">We couldn’t find that {what}.</p>
       <p className="mt-2 text-sm text-pine-soft">It may not exist, or you’re not a member.</p>
-      <Link to="/" className={`${btn.base} ${btn.coral} ${btn.small} mt-5`}>Back home</Link>
+      <Link to="/dashboard" className={`${btn.base} ${btn.coral} ${btn.small} mt-5`}>Back to dashboard</Link>
     </div>
   );
 }

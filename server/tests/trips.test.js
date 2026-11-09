@@ -63,6 +63,17 @@ describe('GET /api/trips/:id public view', () => {
     expect(res.body.members).toContainEqual({ id: B, name: 'Arjun', avatarEmoji: '🏏', status: 'invited' });
   });
 
+  it('never exposes another member\'s committed/commitment state; myStatus is the caller\'s own', async () => {
+    const { rows: [prev] } = await pg.query('SELECT commitment_type FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, A]);
+    await pg.query(`UPDATE trip_members SET status = 'committed', commitment_type = 'need_time' WHERE trip_id = $1 AND user_id = $2`, [tripId, A]);
+    const asB = await request(app).get(`/api/trips/${tripId}`).set('Cookie', as(B));
+    expect(asB.body.members).toContainEqual({ id: A, name: 'Riya', avatarEmoji: '🌸', status: 'submitted' });
+    expect(JSON.stringify(asB.body)).not.toMatch(/committed|need_time/);
+    const asA = await request(app).get(`/api/trips/${tripId}`).set('Cookie', as(A));
+    expect(asA.body.myStatus).toBe('committed');
+    await pg.query(`UPDATE trip_members SET status = 'submitted', commitment_type = $3 WHERE trip_id = $1 AND user_id = $2`, [tripId, A, prev.commitment_type]);
+  });
+
   it('is 404 for someone outside the group', async () => {
     const res = await request(app).get(`/api/trips/${tripId}`).set('Cookie', as(OUTSIDER));
     expect(res.status).toBe(404);

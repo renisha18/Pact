@@ -17,12 +17,16 @@ export function selfUser(row) {
 }
 
 /** Row from GET /api/groups list query. */
-export function groupSummary(row) {
+export function groupSummary(row, actionNeeded = false) {
   return {
     id: row.id,
     name: row.name,
     emoji: row.emoji,
+    description: row.description ?? '',
     memberCount: Number(row.member_count),
+    memberAvatars: (row.member_avatars || []).slice(0, 5),
+    latestTrip: row.latest_trip_title ? { title: row.latest_trip_title, status: row.latest_trip_status } : null,
+    actionNeeded: Boolean(actionNeeded),
     nextTrip: row.next_trip_id
       ? {
           id: row.next_trip_id,
@@ -39,6 +43,7 @@ export function groupDetail(row) {
     id: row.id,
     name: row.name,
     emoji: row.emoji,
+    description: row.description ?? '',
     personality: row.personality,
     createdAt: row.created_at,
   };
@@ -91,9 +96,13 @@ export function tripPublic(row) {
   };
 }
 
-/** Trip member as seen by other members: status only. */
+/**
+ * Trip member as seen by other members. Commitment progress is never per-member:
+ * 'committed' collapses to 'submitted' (details shared); only 'invited' / 'submitted' / 'dropped' are exposed.
+ */
 export function tripMemberPublic(row) {
-  return { id: row.id, name: row.name, avatarEmoji: row.avatar_emoji, status: row.status };
+  const status = row.status === 'invited' || row.status === 'dropped' ? row.status : 'submitted';
+  return { id: row.id, name: row.name, avatarEmoji: row.avatar_emoji, status };
 }
 
 /** PRIVATE: only ever returned to the owner. Joined private_inputs + own trip_members row. */

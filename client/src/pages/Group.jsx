@@ -1,13 +1,13 @@
-import { useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
-import { api } from '../api.js';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useParams } from 'react-router';
+import { useAuth } from '../lib/auth.jsx';
 import { useApi } from '../lib/useApi.js';
-import { formatRange, todayIso } from '../lib/format.js';
+import { useToast } from '../lib/toast.jsx';
+import { formatRange } from '../lib/format.js';
 import {
-  Page, Loading, ErrorNote, NotFoundCard, TripStatusChip, Avatar, btn, card, input, label,
+  Page, ErrorNote, NotFoundCard, Skeleton, TripStatusChip, Avatar, btn, card, input,
 } from '../components/ui.jsx';
-
-const PERSONALITY_LABEL = { chill: 'Chill agent', wholesome: 'Wholesome agent', savage: 'Savage agent' };
+import PlanTripModal from '../components/PlanTripModal.jsx';
 
 function InviteBox({ url }) {
   const [copied, setCopied] = useState(false);
@@ -46,68 +46,47 @@ function InviteBox({ url }) {
   );
 }
 
-function PlanTripForm({ groupId }) {
-  const navigate = useNavigate();
-  const [title, setTitle] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-  const today = todayIso();
-
-  async function submit(e) {
-    e.preventDefault();
-    if (endDate <= startDate) return setError('End date must be after the start date.');
-    setSaving(true);
-    setError(null);
-    try {
-      const trip = await api(`/api/groups/${groupId}/trips`, {
-        method: 'POST',
-        body: { title: title.trim(), startDate, endDate },
-      });
-      navigate(`/trips/${trip.id}`);
-    } catch (err) {
-      setError(err.status === 400 ? 'Check the title and dates (trips are 1–60 nights).' : err.message);
-      setSaving(false);
-    }
-  }
-
+function TripCard({ trip, actionNeeded }) {
   return (
-    <form onSubmit={submit} className={card} aria-labelledby="plan-title">
-      <h2 id="plan-title" className="font-bold">Plan a trip</h2>
-      <p className="mt-1 text-sm text-pine-soft">Everyone in the group gets invited to share their budget privately.</p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
-        <div>
-          <label htmlFor="trip-title" className={label}>Title</label>
-          <input id="trip-title" className={input} value={title} onChange={(e) => setTitle(e.target.value)}
-            maxLength={120} required placeholder="Bali, finally" />
-        </div>
-        <div>
-          <label htmlFor="trip-start" className={label}>Start</label>
-          <input id="trip-start" type="date" className={input} value={startDate} min={today}
-            onChange={(e) => setStartDate(e.target.value)} required />
-        </div>
-        <div>
-          <label htmlFor="trip-end" className={label}>End</label>
-          <input id="trip-end" type="date" className={input} value={endDate} min={startDate || today}
-            onChange={(e) => setEndDate(e.target.value)} required />
-        </div>
+    <li>
+      <Link to={`/trips/${trip.id}`}
+        className="relative block h-full rounded-2xl bg-cloud p-5 shadow-sm ring-1 ring-mint-dark transition hover:-translate-y-0.5 hover:shadow">
+        {actionNeeded && (
+          <span className="absolute top-4 right-4 rounded-full bg-coral px-2.5 py-0.5 text-[11px] font-bold text-cloud">Action needed</span>
+        )}
+        <h3 className="truncate pr-24 font-bold">{trip.title}</h3>
+        <p className="mt-1 text-sm text-pine-soft">{formatRange(trip.startDate, trip.endDate)}</p>
+        <div className="mt-3"><TripStatusChip status={trip.status} /></div>
+      </Link>
+    </li>
+  );
+}
+
+function GroupSkeleton() {
+  return (
+    <Page>
+      <div className="flex items-center gap-4"><Skeleton className="h-16 w-16" /><Skeleton className="h-8 w-1/2" /></div>
+      <div className="mt-8 grid gap-4 lg:grid-cols-[1fr_18rem]">
+        <Skeleton className="h-48" /><Skeleton className="h-48" />
       </div>
-      <div className="mt-4 space-y-3">
-        <ErrorNote>{error}</ErrorNote>
-        <button type="submit" disabled={saving} className={`${btn.base} ${btn.coral} ${btn.small}`}>
-          {saving ? 'Creating…' : 'Start planning →'}
-        </button>
-      </div>
-    </form>
+    </Page>
   );
 }
 
 export default function Group() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const toast = useToast();
+  const { state } = useLocation();
   const { data, error, loading } = useApi(`/api/groups/${encodeURIComponent(id)}`);
+  const actions = useApi('/api/me/actions');
+  const [planOpen, setPlanOpen] = useState(false);
 
-  if (loading) return <Page><Loading /></Page>;
+  useEffect(() => {
+    if (state?.toast) toast(state.toast);
+  }, [state, toast]);
+
+  if (loading) return <GroupSkeleton />;
   if (error) {
     return (
       <Page narrow>
@@ -117,6 +96,8 @@ export default function Group() {
   }
 
   const { group, members, trips, inviteUrl } = data;
+  const isOrganizer = members.some((m) => m.id === user.id && m.role === 'organizer');
+  const myTrips = new Set((actions.data ?? []).map((a) => a.tripId));
 
   return (
     <Page>
@@ -124,36 +105,41 @@ export default function Group() {
         <span className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-cloud text-4xl ring-1 ring-mint-dark" aria-hidden="true">
           {group.emoji}
         </span>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h1 className="truncate text-2xl font-bold sm:text-3xl">{group.name}</h1>
-          <p className="text-sm text-pine-soft">{PERSONALITY_LABEL[group.personality]}</p>
+          {group.description ? (
+            <p className="mt-0.5 text-sm text-pine-soft">{group.description}</p>
+          ) : isOrganizer ? (
+            <Link to={`/groups/${group.id}/settings`} className="mt-0.5 inline-block text-sm text-pine-soft underline hover:text-pine">
+              Add a description
+            </Link>
+          ) : null}
         </div>
+        <Link
+          to={`/groups/${group.id}/settings`}
+          aria-label="Group settings"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-xl text-pine-soft hover:bg-mint-dark hover:text-pine"
+        >
+          <span aria-hidden="true">⚙️</span>
+        </Link>
       </header>
 
       <div className="mt-8 grid gap-4 lg:grid-cols-[1fr_18rem]">
-        <div className="space-y-4">
-          <section className={card} aria-labelledby="trips-title">
-            <h2 id="trips-title" className="font-bold">Trips</h2>
-            {trips.length === 0 ? (
-              <p className="mt-2 text-sm text-pine-soft">No trips yet. Plan one below.</p>
-            ) : (
-              <ul className="mt-3 divide-y divide-mint-dark">
-                {trips.map((t) => (
-                  <li key={t.id}>
-                    <Link to={`/trips/${t.id}`} className="flex items-center justify-between gap-3 py-3 hover:text-coral-dark">
-                      <span className="min-w-0">
-                        <span className="block truncate font-medium">{t.title}</span>
-                        <span className="block text-xs text-pine-soft">{formatRange(t.startDate, t.endDate)}</span>
-                      </span>
-                      <TripStatusChip status={t.status} />
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-          <PlanTripForm groupId={group.id} />
-        </div>
+        <section aria-labelledby="trips-title" className={trips.length === 0 ? 'rounded-2xl bg-white p-6 ring-2 ring-coral' : ''}>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 id="trips-title" className="text-lg font-bold">Trips</h2>
+            <button type="button" onClick={() => setPlanOpen(true)} className={`${btn.base} ${btn.coral} ${btn.small}`}>
+              {trips.length === 0 ? '✨ Plan your first trip' : 'Plan a new trip'}
+            </button>
+          </div>
+          {trips.length === 0 ? (
+            <p className="text-sm text-pine-soft">No trips yet. Plan one and everyone gets invited to share their budget privately.</p>
+          ) : (
+            <ul className="grid gap-3 sm:grid-cols-2">
+              {trips.map((t) => <TripCard key={t.id} trip={t} actionNeeded={myTrips.has(t.id)} />)}
+            </ul>
+          )}
+        </section>
 
         <div className="space-y-4">
           <InviteBox url={inviteUrl} />
@@ -163,19 +149,21 @@ export default function Group() {
               {members.map((m) => (
                 <li key={m.id} className="flex items-center gap-3">
                   <Avatar emoji={m.avatarEmoji} />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">{m.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{m.name}{m.id === user.id ? ' (you)' : ''}</span>
                     <span className="block text-xs text-pine-soft">
-                      {m.role === 'organizer' ? 'Organizer' : 'Member'}
-                      {m.funTitle ? ` · ${m.funTitle}` : ''}
+                      {m.role === 'organizer' ? 'Organizer' : 'Member'}{m.funTitle ? ` · ${m.funTitle}` : ''}
                     </span>
                   </span>
+                  <span className="rounded-full bg-water/30 px-2.5 py-0.5 text-xs font-medium">joined</span>
                 </li>
               ))}
             </ul>
           </section>
         </div>
       </div>
+
+      {planOpen && <PlanTripModal groupId={group.id} onClose={() => setPlanOpen(false)} />}
     </Page>
   );
 }

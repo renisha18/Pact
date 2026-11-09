@@ -9,3 +9,11 @@ describe('GET /health', () => {
     expect(res.body).toEqual({ ok: true, aiMode: 'mock' });
   });
 });
+
+describe('unknown API routes', () => {
+  it('return JSON 404', async () => {
+    const res = await request(app).get('/api/nope/at/all');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found' });
+  });
+});

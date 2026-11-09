@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useAuth } from '../lib/auth.jsx';
 import PixelScene from '../components/PixelScene.jsx';
-import GroupCards from '../components/GroupCards.jsx';
 
 const FEATURES = [
   { emoji: '🤫', title: 'Private budgets', body: 'Tell Pact what you can spend. Nobody else ever sees it.' },
@@ -27,7 +26,7 @@ export default function Home() {
     if (hash) document.getElementById(hash.slice(1))?.scrollIntoView();
   }, [hash]);
 
-  const createHref = user ? '/groups/new' : `/login?next=${encodeURIComponent('/groups/new')}`;
+  const createHref = user ? '/dashboard' : `/login?next=${encodeURIComponent('/dashboard')}`;
 
   return (
     <main>
@@ -42,7 +41,7 @@ export default function Home() {
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Link to={createHref} className={`${btn} bg-coral text-cloud hover:bg-coral-dark`}>
-            Create a group →
+            Want to form a group?
           </Link>
           <Link
             to={{ hash: '#how' }}
@@ -67,8 +66,6 @@ export default function Home() {
         ))}
       </section>
 
-      {user && <GroupCards />}
-
       <section id="how" className="scroll-mt-20 bg-mint-dark/50 py-16" aria-labelledby="how-title">
         <div className="mx-auto max-w-5xl px-4">
           <h2 id="how-title" className="text-center text-2xl font-bold sm:text-3xl">How it works</h2>
@@ -87,7 +84,7 @@ export default function Home() {
       </section>
 
       <footer className="py-8 text-center text-xs text-pine-soft">
-        Pact · PayPal sandbox demo · no real money moves
+        Pact · Plan trips together, privately
       </footer>
     </main>
   );
