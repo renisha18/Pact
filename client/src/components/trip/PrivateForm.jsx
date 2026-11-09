@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
 import { PixelLock } from '../Planning.jsx';
-import { ErrorNote, btn, card, input, label } from '../ui.jsx';
+import { ErrorNote, Loading, btn, card, input, label } from '../ui.jsx';
 
 const COMMIT_OPTIONS = [
   { value: 'hold', emoji: '🔒', title: 'Hold now', body: 'Place a PayPal hold for my share as soon as we agree.' },

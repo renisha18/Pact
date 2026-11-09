@@ -10,6 +10,7 @@ import { Page, ErrorNote, NotFoundCard, Skeleton, TripStatusChip } from '../comp
 import { PlanPanel, Proposals, AskPact, PlanStatus, NegotiationCard } from '../components/Planning.jsx';
 import { CommitPanel } from '../components/Commit.jsx';
 import PrivateForm from '../components/trip/PrivateForm.jsx';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import TripTabs from '../components/trip/TripTabs.jsx';
 import OverviewTab from '../components/trip/OverviewTab.jsx';
 
@@ -108,6 +109,7 @@ export default function Trip() {
       <TripTabs active={tab} onChange={go} pending={pending} />
 
       <div id="trip-panel" role="tabpanel" aria-label={TABS.find((t) => t.id === tab)?.label} className="mt-6 space-y-6 pb-24 md:pb-8">
+        <ErrorBoundary resetKey={tab}>
         {!tab && <Skeleton className="h-40" />}
 
         {tab === 'overview' && (
@@ -154,6 +156,7 @@ export default function Trip() {
         )}
 
         {tab === 'ask' && <AskPact tripId={trip.id} />}
+        </ErrorBoundary>
       </div>
     </Page>
   );
