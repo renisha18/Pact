@@ -7,7 +7,7 @@ import { formatRange } from '../lib/format.js';
 import {
   Page, Loading, ErrorNote, NotFoundCard, TripStatusChip, MemberStatusChip, Avatar, btn, card, input, label,
 } from '../components/ui.jsx';
-import { PixelLock, PlanPanel, Proposals, AskPact } from '../components/Planning.jsx';
+import { PixelLock, PlanPanel, Proposals, AskPact, PlanStatus, NegotiationCard } from '../components/Planning.jsx';
 import { CommitPanel } from '../components/Commit.jsx';
 
 const COMMIT_OPTIONS = [
@@ -167,6 +167,8 @@ export default function Trip() {
   const [planError, setPlanError] = useState(null);
   const [planMessage, setPlanMessage] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const bump = () => setRefreshKey((k) => k + 1);
 
   async function plan() {
     setPlanning(true);
@@ -174,8 +176,10 @@ export default function Trip() {
     setPlanMessage(null);
     try {
       const res = await api(`/api/trips/${encodeURIComponent(id)}/plan`, { method: 'POST' });
-      setPlanMessage(res.message ?? null);
+      // Status notices (working privately / Plan B) have their own cards below.
+      setPlanMessage(res.proposals?.length === 0 && !res.planB && !res.message?.startsWith('Pact ') ? res.message ?? null : null);
       await reload();
+      bump();
     } catch (err) {
       setPlanError(err.message);
     } finally {
@@ -240,9 +244,16 @@ export default function Trip() {
             <button type="button" onClick={() => setNotice(null)} className="text-pine-soft hover:text-pine" aria-label="Dismiss">✕</button>
           </p>
         )}
+        {me && me.status !== 'dropped' && (
+          <NegotiationCard tripId={trip.id} refreshKey={refreshKey}
+            onResolved={async () => { await reload(); bump(); }} />
+        )}
         {(EDITABLE_TRIP.has(trip.status) || planning) && (
           <PlanPanel isOrganizer={isOrganizer} waitingCount={waitingCount} planning={planning}
             error={planError} message={planMessage} onPlan={plan} />
+        )}
+        {EDITABLE_TRIP.has(trip.status) && !planning && (
+          <PlanStatus tripId={trip.id} tripNights={trip.nights} refreshKey={refreshKey} />
         )}
         {showProposals && (
           <>

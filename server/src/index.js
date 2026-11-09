@@ -11,6 +11,7 @@ import { invitesRouter } from './routes/invites.js';
 import { tripsRouter } from './routes/trips.js';
 import { planningRouter } from './routes/planning.js';
 import { commitRouter } from './routes/commit.js';
+import { negotiationsRouter } from './routes/negotiations.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import { aiMode } from './ai/llm.js';
 
@@ -41,6 +42,7 @@ app.use('/api/invites', invitesRouter);
 app.use('/api/trips', tripsRouter);
 app.use('/api/trips', planningRouter);
 app.use('/api/trips', commitRouter);
+app.use('/api/trips', negotiationsRouter);
 
 app.use(notFound);
 app.use(errorHandler);

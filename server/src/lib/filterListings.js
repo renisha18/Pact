@@ -20,6 +20,9 @@ const ROOM_TYPE_PHRASES = {
 
 const amenityPhrase = (a) => AMENITY_PHRASES[a] ?? `has ${a}`;
 
+/** Room type of an avoid entry: {type, strength} or a legacy plain string. */
+export const avoidType = (a) => (typeof a === 'string' ? a : a.type);
+
 const EMPTY = { hardRequirements: [], avoidRoomTypes: [], softPreferences: [] };
 
 function assertPositiveInt(value, label) {
@@ -28,7 +31,7 @@ function assertPositiveInt(value, label) {
 
 /**
  * @param {Array<{id:number, price_per_night_cents:number, max_guests:number, room_type:string, amenities:string[], vibe_tags:string[]}>} listings
- * @param {Array<{userId:number, capCents:number, extracted?: {hardRequirements:string[], avoidRoomTypes:string[], softPreferences:string[]} | null}>} members
+ * @param {Array<{userId:number, capCents:number, extracted?: {hardRequirements:string[], avoidRoomTypes:Array<{type:string, strength:'strict'|'preferred'}|string>, softPreferences:string[]} | null}>} members
  * @param {number} nights
  * @param {number} groupSize
  * @returns {Array<{listingId:number, totalCents:number, softMatchCount:number, facts:string[]}>}
@@ -39,7 +42,8 @@ export function filterListings(listings, members, nights, groupSize) {
   if (!Array.isArray(members) || members.length === 0) throw new TypeError('members must be a non-empty array');
 
   const prefs = members.map((m) => ({ ...EMPTY, ...(m.extracted ?? {}) }));
-  const avoided = new Set(prefs.flatMap((p) => p.avoidRoomTypes));
+  // Both 'strict' and 'preferred' avoids exclude. Plain strings (old cache) count as strict.
+  const avoided = new Set(prefs.flatMap((p) => p.avoidRoomTypes.map(avoidType)));
   const required = new Set(prefs.flatMap((p) => p.hardRequirements));
   const caps = members.map((m) => ({ userId: m.userId, capCents: m.capCents }));
 

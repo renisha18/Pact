@@ -1,4 +1,4 @@
-// Water-filling fair split. All amounts are integer cents.
+// Cap-aware fair split (water-filling). All amounts are integer cents.
 // Members whose cap is below the equal share pay exactly their cap; everyone
 // else splits the rest equally. Leftover cents go one each to uncapped
 // members in ascending userId. Shares are returned in input order.

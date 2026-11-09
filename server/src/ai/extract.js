@@ -6,12 +6,13 @@ import { z } from 'zod';
 import { query } from '../db.js';
 import { generateJson, aiMode } from './llm.js';
 
-const EXTRACTION_VERSION = 1;
+const EXTRACTION_VERSION = 2;
 const MAX_TAGS = 20;
 
 const outputSchema = z.object({
   hardRequirements: z.array(z.string()).max(50).default([]),
   avoidRoomTypes: z.array(z.string()).max(50).default([]),
+  preferredAvoidRoomTypes: z.array(z.string()).max(50).default([]),
   softPreferences: z.array(z.string()).max(50).default([]),
 });
 
@@ -43,6 +44,8 @@ Produce JSON with exactly these keys:
   "can't do stairs" -> "step-free access"; "too hot without AC" -> "air conditioning".
 - "avoidRoomTypes": room types this member will not stay in, from <comfort>.
   Example: "no dorms" -> "mixed_dorm"; "need my own room" -> "shared_rooms" and "mixed_dorm".
+- "preferredAvoidRoomTypes": room types this member would rather not stay in, from <preferences>.
+  Example: "would rather skip dorms" -> "mixed_dorm".
 - "softPreferences": amenities or vibe tags the member would like, from <preferences>.
 
 Only include a word if the text clearly supports it. If nothing applies, use [].
@@ -61,6 +64,17 @@ ${neutralize(row.preferences_text)}
 ${neutralize(row.comfort_text)}
 </comfort>
 </member_text>`;
+}
+
+/**
+ * Tags each avoided room type with where it came from: 'strict' (comfort_text,
+ * never negotiable) or 'preferred' (preferences_text). Strict wins on overlap.
+ */
+function tagAvoids(strict, preferred) {
+  return [
+    ...strict.map((type) => ({ type, strength: 'strict' })),
+    ...preferred.filter((t) => !strict.includes(t)).map((type) => ({ type, strength: 'preferred' })),
+  ];
 }
 
 /** Keeps only allowed words (case-insensitive), in canonical spelling, deduped. */
@@ -83,7 +97,7 @@ const publicShape = (e) => ({
 /**
  * Extracts and saves tags for one member's private input.
  * @param {{trip_id?: number, user_id?: number, tripId?: number, userId?: number}} privateInput
- * @returns {Promise<{hardRequirements: string[], avoidRoomTypes: string[], softPreferences: string[]} | null>}
+ * @returns {Promise<{hardRequirements: string[], avoidRoomTypes: Array<{type: string, strength: 'strict'|'preferred'}>, softPreferences: string[]} | null>}
  *   null if the member has no private input.
  */
 export async function extractPreferences(privateInput, db = { query }) {
@@ -119,7 +133,10 @@ export async function extractPreferences(privateInput, db = { query }) {
     const features = [...vocab.amenities, ...vocab.vibeTags];
     extracted = {
       hardRequirements: filterTo(features, raw.hardRequirements),
-      avoidRoomTypes: filterTo(vocab.roomTypes, raw.avoidRoomTypes),
+      avoidRoomTypes: tagAvoids(
+        filterTo(vocab.roomTypes, raw.avoidRoomTypes ?? []),
+        filterTo(vocab.roomTypes, raw.preferredAvoidRoomTypes ?? []),
+      ),
       softPreferences: filterTo(features, raw.softPreferences),
     };
   }

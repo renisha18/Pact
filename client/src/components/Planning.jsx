@@ -133,6 +133,150 @@ export function PlanPanel({ isOrganizer, waitingCount, planning, error, message,
   );
 }
 
+// --- Group status while there's no plan (PUBLIC: never says who or how many)
+
+/** "Pact is working something out privately…", the give-up note, or the Plan B card. */
+export function PlanStatus({ tripId, tripNights, refreshKey }) {
+  const { data, reload } = useApi(`/api/trips/${tripId}/proposals`);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    reload();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!data || data.proposals?.length > 0) return null;
+
+  if (data.planB) {
+    const n = data.planB.nights;
+    return (
+      <section className={`${card} relative mt-3`} aria-labelledby="planb-title">
+        <CloudTop />
+        <p className="text-xs font-bold tracking-widest text-coral-dark uppercase">Plan B</p>
+        <h2 id="planb-title" className="mt-1 text-lg font-bold">
+          {n} {n === 1 ? 'night' : 'nights'} instead of {tripNights}?
+        </h2>
+        <div className="mt-3">
+          <SpeechBubble>
+            {`No stay fits everyone for ${tripNights} nights, but one does for ${n}. Shorten the trip and Pact can make it work.`}
+          </SpeechBubble>
+        </div>
+      </section>
+    );
+  }
+
+  if (!data.notice) return null;
+  const working = data.notice.startsWith('Pact is working');
+  return (
+    <section className={`${card} flex items-center gap-4`} role="status" aria-live="polite">
+      <PactAvatar className={`h-10 w-10 ${working ? 'pixel-bob' : ''}`} />
+      <div className="min-w-0">
+        <p className="font-medium">{data.notice}</p>
+        {working && (
+          <div className="mt-2 flex gap-1" aria-hidden="true">
+            {[0, 1, 2].map((n) => (
+              <span key={n} className="pixel-dot h-1.5 w-1.5 bg-pine" style={{ animationDelay: `${n * 0.15}s` }} />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// --- Private negotiation card (PRIVATE: only ever fetched for the signed-in member)
+
+const ROOM_TYPE_LABEL = { private_rooms: 'private rooms', shared_rooms: 'shared rooms', mixed_dorm: 'a mixed dorm' };
+
+export function NegotiationCard({ tripId, refreshKey, onResolved }) {
+  const { data, error, reload } = useApi(`/api/trips/${tripId}/my-negotiation`);
+  const [busy, setBusy] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const [thanks, setThanks] = useState(null);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    reload();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function respond(response) {
+    setBusy(response);
+    setActionError(null);
+    try {
+      const res = await api(`/api/trips/${tripId}/negotiations/${data.id}`, { method: 'POST', body: { response } });
+      if (response === 'more_time') setThanks('No rush. This stays here whenever you’re ready.');
+      else if (response === 'reject') setThanks('All good, thanks for letting Pact know.');
+      else if (response === 'accept') setThanks('Thank you! Pact is re-planning now.');
+      await reload();
+      if (response !== 'more_time' && response !== 'another') onResolved?.(res.plan?.message ?? null);
+    } catch (err) {
+      setActionError(err.status === 409 ? 'This one has moved on. Refresh for the latest.' : err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (error || !data) {
+    return thanks ? <p className="rounded-xl bg-mint px-4 py-3 text-sm text-pine-soft" role="status">{thanks}</p> : null;
+  }
+
+  const responses = data.responses ?? [];
+  const ask = data.kind === 'raiseBudget'
+    ? `Stretch your budget by ${formatUsd(data.raiseByCents)}`
+    : `Be okay with ${ROOM_TYPE_LABEL[data.roomType] ?? data.roomType}`;
+
+  return (
+    <section className={`${card} ring-2 ring-coral/40`} aria-labelledby="nego-title">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="nego-title" className="flex items-center gap-2 font-bold"><PixelLock /> Just between you and Pact</h2>
+        <span className="flex items-center gap-1.5 rounded-full bg-mint px-2.5 py-0.5 text-xs text-pine-soft">
+          <PixelLock className="h-3 w-3" /> Only you see this
+        </span>
+      </div>
+
+      <div className="mt-4"><SpeechBubble tone="white">{data.message}</SpeechBubble></div>
+
+      <dl className="mt-4 grid gap-2 rounded-xl bg-mint p-3 text-sm sm:grid-cols-3">
+        <div><dt className="text-xs text-pine-soft">The ask</dt><dd className="font-medium">{ask}</dd></div>
+        <div>
+          <dt className="text-xs text-pine-soft">Unlocks</dt>
+          <dd className="font-medium break-words"><span aria-hidden="true">{data.stay.emoji} </span>{data.stay.name}</dd>
+        </div>
+        <div><dt className="text-xs text-pine-soft">Your share</dt><dd className="font-medium">{formatUsd(data.newShareCents)}</dd></div>
+      </dl>
+      {data.matchesOwnWishes?.length > 0 && (
+        <ul className="mt-3 flex flex-wrap gap-1.5" aria-label="Matches your wishes">
+          {data.matchesOwnWishes.map((w) => (
+            <li key={w} className="rounded-full bg-coral/10 px-2.5 py-0.5 text-xs text-coral-dark">✓ {w}</li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <button type="button" disabled={!!busy} onClick={() => respond('accept')} className={`${btn.base} ${btn.coral} ${btn.small}`}>
+          {busy === 'accept' ? 'Accepting…' : 'Accept'}
+        </button>
+        <button type="button" disabled={!!busy} onClick={() => respond('reject')} className={`${btn.base} ${btn.cloud} ${btn.small}`}>
+          No thanks
+        </button>
+        {responses.includes('more_time') && (
+          <button type="button" disabled={!!busy} onClick={() => respond('more_time')} className={`${btn.base} ${btn.cloud} ${btn.small}`}>
+            Need more time
+          </button>
+        )}
+        {responses.includes('another') && (
+          <button type="button" disabled={!!busy} onClick={() => respond('another')} className={`${btn.base} ${btn.cloud} ${btn.small}`}>
+            {busy === 'another' ? 'Finding…' : 'Show me another'}
+          </button>
+        )}
+      </div>
+      <div className="mt-3 space-y-2">
+        {thanks && <p className="text-sm text-pine-soft" role="status">{thanks}</p>}
+        <ErrorNote>{actionError}</ErrorNote>
+      </div>
+    </section>
+  );
+}
+
 // --- Proposals + voting
 
 function ProposalCard({ p, isMine, canVote, voting, onVote, winner = false }) {
@@ -195,6 +339,7 @@ function MyShareCard({ tripId }) {
       <p className="mt-4 flex items-center gap-2 rounded-xl bg-mint px-3 py-2 text-xs text-pine-soft">
         <PixelLock className="h-3 w-3" /> Only you see this.
       </p>
+      <p className="mt-2 text-xs text-pine-soft">Worked out with Pact’s cap-aware fair split: nobody pays more than they said they could.</p>
     </section>
   );
 }

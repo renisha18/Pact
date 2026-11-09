@@ -10,6 +10,10 @@ import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
 import { filterListings } from '../lib/filterListings.js';
 import { fairSplit } from '../lib/fairSplit.js';
+import { counterfactual } from '../lib/counterfactual.js';
+import {
+  openNegotiations, applyAllowedRoomTypes, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
+} from '../lib/negotiations.js';
 import { proposalPublic } from '../lib/views.js';
 import { extractAll, pickAndExplain } from '../ai/plan.js';
 import { askPact } from '../ai/ask.js';
@@ -19,7 +23,7 @@ export const planningRouter = Router();
 planningRouter.use(requireAuth);
 
 const TOP_CANDIDATES = 8;
-const PLANNABLE_STATUSES = ['collecting', 'planning', 'voting'];
+export const PLANNABLE_STATUSES = ['collecting', 'planning', 'voting'];
 const NO_FIT_MESSAGE = 'No stay fits everyone right now. Try different dates or budgets.';
 
 async function requireTripMember(req, _res, next) {
@@ -55,7 +59,7 @@ export const AI_UNAVAILABLE_MESSAGE = 'Pact is catching its breath — try again
  * Friendly 503 for any AI failure. Logs only the generic code/status and, on a
  * 429, the provider's quota name. Never request or response content.
  */
-function sendAiUnavailable(res, where, err) {
+export function sendAiUnavailable(res, where, err) {
   if (process.env.NODE_ENV !== 'test') {
     const quota = err.quota ? ` quota=${err.quota}${err.quotaId ? ` (${err.quotaId})` : ''}` : '';
     console.warn(`[ai:${where}] ${err.code}: ${err.message}${quota}`);
@@ -69,7 +73,7 @@ function sendAiUnavailable(res, where, err) {
 }
 
 /** Only ids/counts in details: never private text or budgets. */
-function logEvent(db, tripId, actorUserId, action, details = {}) {
+export function logEvent(db, tripId, actorUserId, action, details = {}) {
   return db.query(
     'INSERT INTO event_log (trip_id, actor_user_id, action, details) VALUES ($1, $2, $3, $4)',
     [tripId, actorUserId, action, JSON.stringify(details)],
@@ -89,22 +93,29 @@ async function loadProposals(tripId) {
   return rows.map(proposalPublic);
 }
 
-// --- POST /:id/plan
+// --- Planning (shared by POST /:id/plan and an accepted negotiation)
 
-planningRouter.post('/:id/plan', requireTripMember, requireOrganizer, planLimiter, async (req, res) => {
-  const trip = req.trip;
+const nightsText = (n) => `${n} ${n === 1 ? 'night' : 'nights'}`;
+
+/**
+ * Runs the planner for a trip. Throws HttpError for 400/409 and AiError if the AI is down.
+ * @returns {Promise<{status: string, proposals: object[], message?: string, planB?: {nights: number}}>}
+ *   PUBLIC: safe to return to any trip member.
+ */
+export async function runPlan(tripId, actorUserId) {
+  const { rows: [trip] } = await query('SELECT * FROM trips WHERE id = $1', [tripId]);
   if (!PLANNABLE_STATUSES.includes(trip.status)) throw new HttpError(409, 'This trip can no longer be planned');
 
   // PRIVATE rows: used for filtering and leakCheck only, never returned or sent to the AI.
   const { rows: members } = await query(
     `SELECT tm.trip_id, tm.user_id, u.name,
-            pi.max_budget_cents, pi.preferences_text, pi.comfort_text
+            pi.max_budget_cents, pi.preferences_text, pi.comfort_text, pi.allowed_room_types
        FROM trip_members tm
        JOIN users u ON u.id = tm.user_id
        LEFT JOIN private_inputs pi ON pi.trip_id = tm.trip_id AND pi.user_id = tm.user_id
       WHERE tm.trip_id = $1 AND tm.status <> 'dropped'
       ORDER BY tm.user_id`,
-    [req.tripId],
+    [tripId],
   );
   const missing = members.filter((m) => m.max_budget_cents === null).length;
   if (missing > 0) {
@@ -118,47 +129,74 @@ planningRouter.post('/:id/plan', requireTripMember, requireOrganizer, planLimite
        FROM listings WHERE region = $1 ORDER BY id`,
     [trip.region],
   );
+  const listingsById = new Map(listings.map((l) => [l.id, l]));
 
-  let candidates = [];
-  let picks = [];
-  try {
-    const extracted = await extractAll(members);
-    const filterMembers = members.map((m) => ({
-      userId: m.user_id,
-      capCents: m.max_budget_cents,
-      extracted: extracted.get(m.user_id),
-    }));
-    candidates = filterListings(listings, filterMembers, trip.nights, members.length).slice(0, TOP_CANDIDATES);
-    if (candidates.length > 0) {
-      const listingsById = new Map(listings.map((l) => [l.id, l]));
-      picks = await pickAndExplain(candidates, listingsById, group.personality, members);
-    }
-  } catch (err) {
-    if (err instanceof AiError) return sendAiUnavailable(res, 'plan', err);
-    throw err;
-  }
+  const raw = await extractAll(members);
+  const extracted = new Map(members.map((m) => [m.user_id, applyAllowedRoomTypes(raw.get(m.user_id), m.allowed_room_types)]));
+  const filterMembers = members.map((m) => ({
+    userId: m.user_id,
+    capCents: m.max_budget_cents,
+    extracted: extracted.get(m.user_id),
+  }));
+  const candidates = filterListings(listings, filterMembers, trip.nights, members.length).slice(0, TOP_CANDIDATES);
+  const picks = candidates.length > 0 ? await pickAndExplain(candidates, listingsById, group.personality, members) : [];
 
   if (picks.length === 0) {
-    await logEvent({ query }, req.tripId, req.user.id, 'plan_no_fit');
-    return res.json({ status: trip.status, proposals: [], message: NO_FIT_MESSAGE });
+    const options = counterfactual(listings, filterMembers, trip.nights, members.length);
+    // No transaction: messages may call the AI. The one-pending-per-member index guards races.
+    const result = await openNegotiations({ query }, tripId, options, {
+      personality: group.personality, extracted, listingsById, privateInputs: members,
+    });
+    if (result.outcome === 'plan_b') {
+      await logEvent({ query }, tripId, actorUserId, 'plan_b', { nights: result.nights });
+      return {
+        status: trip.status,
+        proposals: [],
+        planB: { nights: result.nights },
+        message: `Plan B: no stay fits everyone for ${nightsText(trip.nights)}, but one does for ${nightsText(result.nights)}.`,
+      };
+    }
+    if (result.outcome === 'negotiating') {
+      await logEvent({ query }, tripId, null, 'plan_negotiating');
+      return { status: trip.status, proposals: [], message: WORKING_MESSAGE };
+    }
+    if (result.outcome === 'exhausted') {
+      await logEvent({ query }, tripId, null, 'negotiation_exhausted');
+      return { status: trip.status, proposals: [], message: EXHAUSTED_MESSAGE };
+    }
+    await logEvent({ query }, tripId, actorUserId, 'plan_no_fit');
+    return { status: trip.status, proposals: [], message: NO_FIT_MESSAGE };
   }
 
   const totals = new Map(candidates.map((c) => [c.listingId, c.totalCents]));
   await withTransaction(async (client) => {
-    const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [req.tripId]);
+    const { rows: [t] } = await client.query('SELECT status FROM trips WHERE id = $1 FOR UPDATE', [tripId]);
     if (!PLANNABLE_STATUSES.includes(t.status)) throw new HttpError(409, 'This trip can no longer be planned');
-    await client.query('DELETE FROM proposals WHERE trip_id = $1', [req.tripId]); // votes cascade
+    await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
     for (const p of picks) {
       await client.query(
         'INSERT INTO proposals (trip_id, listing_id, total_cents, reason_text) VALUES ($1, $2, $3, $4)',
-        [req.tripId, p.listingId, totals.get(p.listingId), p.reason],
+        [tripId, p.listingId, totals.get(p.listingId), p.reason],
       );
     }
-    await client.query(`UPDATE trips SET status = 'voting', chosen_listing_id = NULL WHERE id = $1`, [req.tripId]);
-    await logEvent(client, req.tripId, req.user.id, 'plan', { proposalCount: picks.length });
+    // A plan exists, so any open asks are moot.
+    await client.query(`DELETE FROM negotiations WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
+    await client.query(`UPDATE trips SET status = 'voting', chosen_listing_id = NULL WHERE id = $1`, [tripId]);
+    await logEvent(client, tripId, actorUserId, 'plan', { proposalCount: picks.length });
   });
 
-  res.json({ status: 'voting', proposals: await loadProposals(req.tripId) });
+  return { status: 'voting', proposals: await loadProposals(tripId) };
+}
+
+// --- POST /:id/plan
+
+planningRouter.post('/:id/plan', requireTripMember, requireOrganizer, planLimiter, async (req, res) => {
+  try {
+    res.json(await runPlan(req.tripId, req.user.id));
+  } catch (err) {
+    if (err instanceof AiError) return sendAiUnavailable(res, 'plan', err);
+    throw err;
+  }
 });
 
 // --- GET /:id/proposals
@@ -174,8 +212,11 @@ planningRouter.get('/:id/proposals', requireTripMember, async (req, res) => {
       WHERE p.trip_id = $1`,
     [req.tripId],
   );
+  const proposals = await loadProposals(req.tripId);
   res.json({
-    proposals: await loadProposals(req.tripId),
+    proposals,
+    // PUBLIC status while there's no plan: never says who or how many.
+    ...(proposals.length === 0 ? await negotiationNotice({ query }, req.tripId) : { notice: null, planB: null }),
     myVoteProposalId: rows[0]?.proposal_id ?? null,
     winningProposalId: winner[0]?.id ?? null,
   });

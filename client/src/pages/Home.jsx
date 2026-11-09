@@ -13,7 +13,7 @@ const FEATURES = [
 const STEPS = [
   { title: 'Share privately', body: 'Each person adds a budget and what they care about. Only they can see it.' },
   { title: 'Agent proposes', body: 'Pact suggests stays that fit everyone, without revealing anyone’s numbers.' },
-  { title: 'Everyone commits', body: 'The group votes, then each person places a hold for their own share.' },
+  { title: 'Everyone commits', body: 'The group votes, then each person holds their own share, set by a cap-aware fair split.' },
   { title: 'Booked, nobody fronted', body: 'Once everyone is in, it’s booked. No IOUs, no chasing.' },
 ];
 
@@ -35,6 +35,7 @@ export default function Home() {
         <h1 className="mx-auto max-w-3xl text-3xl leading-tight font-bold text-balance sm:text-5xl">
           Always the one who plans the trip?
         </h1>
+        <p className="mt-3 text-lg font-bold text-coral-dark sm:text-xl">Agree privately. Commit together.</p>
         <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-pretty text-pine-soft sm:text-lg">
           And the one left chasing everyone for money after? Pact lets your group commit together — budgets stay
           private, nobody fronts the cash, and no one gets left out.

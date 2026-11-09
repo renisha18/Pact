@@ -134,3 +134,29 @@ export function paymentSelf(row) {
     updatedAt: row.updated_at,
   };
 }
+
+/**
+ * PRIVATE: a member's own negotiation. Joined negotiations + the unlocked listing.
+ * change_json is server-built and only ever describes this member.
+ */
+export function negotiationSelf(row) {
+  const c = row.change_json;
+  const canAskAnother = !c.isAlternative && c.alternative != null;
+  return {
+    id: row.id,
+    kind: c.change.kind,
+    ...(c.change.kind === 'raiseBudget' ? { raiseByCents: c.change.byCents } : {}),
+    ...(c.change.kind === 'allowRoomType' ? { roomType: c.change.roomType } : {}),
+    stay: { id: row.listing_id, name: row.listing_name, area: row.area, emoji: row.emoji },
+    newShareCents: c.newShareCents,
+    matchesOwnWishes: c.matchesOwnWishes,
+    message: row.message,
+    responses: [
+      'accept',
+      c.change.kind === 'raiseBudget' ? 'more_time' : 'reject',
+      ...(c.change.kind === 'raiseBudget' ? ['reject'] : []),
+      ...(canAskAnother ? ['another'] : []),
+    ],
+    createdAt: row.created_at,
+  };
+}

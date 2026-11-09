@@ -139,7 +139,7 @@ const MOCK_REASONS = [
 ];
 
 const MOCK_JSON = {
-  extract: () => ({ hardRequirements: [], avoidRoomTypes: [], softPreferences: [] }),
+  extract: () => ({ hardRequirements: [], avoidRoomTypes: [], preferredAvoidRoomTypes: [], softPreferences: [] }),
   pick: (content) => {
     const ids = [...new Set([...content.matchAll(/"listingId":(\d+)/g)].map((m) => Number(m[1])))];
     return { picks: ids.slice(0, 3).map((listingId, i) => ({ listingId, reason: MOCK_REASONS[i] })) };
@@ -148,6 +148,7 @@ const MOCK_JSON = {
 };
 
 const MOCK_TEXT = {
+  negotiate: () => 'Tiny idea from Pact: one small tweak on your side could open up a stay the whole crew would love.',
   ask: () => "I'm in mock mode, so I'm just vibing right now. Ask me again when the real me wakes up!",
 };
 

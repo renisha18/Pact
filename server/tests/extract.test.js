@@ -58,12 +58,26 @@ describe('extractPreferences', () => {
     const out = await extractPreferences(KEY);
     expect(out).toEqual({
       hardRequirements: ['step-free access'],
-      avoidRoomTypes: ['mixed_dorm'],
+      avoidRoomTypes: [{ type: 'mixed_dorm', strength: 'strict' }],
       softPreferences: ['pool', 'surf'],
     });
 
     const { rows: [r] } = await pg.query('SELECT extracted_json FROM private_inputs WHERE trip_id = 1 AND user_id = 1');
-    expect(r.extracted_json).toMatchObject({ ...out, version: 1 });
+    expect(r.extracted_json).toMatchObject({ ...out, version: 2 });
+  });
+
+  it('tags comfort avoids strict and preference avoids preferred; strict wins on overlap', async () => {
+    await setInput('rather skip shared rooms and dorms', 'no dorms');
+    generateJson.mockResolvedValueOnce({
+      hardRequirements: [],
+      avoidRoomTypes: ['mixed_dorm'],
+      preferredAvoidRoomTypes: ['shared_rooms', 'mixed_dorm', 'tents'],
+      softPreferences: [],
+    });
+    expect((await extractPreferences(KEY)).avoidRoomTypes).toEqual([
+      { type: 'mixed_dorm', strength: 'strict' },
+      { type: 'shared_rooms', strength: 'preferred' },
+    ]);
   });
 
   it('room types cannot leak into feature lists and vice versa', async () => {
