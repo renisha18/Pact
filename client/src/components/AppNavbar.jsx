@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { api } from '../api.js';
+import { useApi } from '../lib/useApi.js';
 import { useAuth } from '../lib/auth.jsx';
 import { ACTION_TAB } from '../lib/tripState.js';
 import TentIcon from './TentIcon.jsx';
@@ -26,16 +26,23 @@ function useMenu() {
 
 const panel = 'absolute right-0 top-full z-30 mt-2 rounded-2xl bg-cloud p-1.5 shadow-lg ring-1 ring-mint-dark';
 
-function Bell() {
-  const { pathname } = useLocation();
-  const [actions, setActions] = useState([]);
-  const { open, setOpen, ref } = useMenu();
+// Only things I can act on right now. "cover" and anything informational are intentionally not listed.
+const BELL_ACTION = {
+  private_details: 'Share your private details',
+  negotiation: 'Answer Pact’s private question',
+  vote: 'Cast your vote',
+  commit: 'Approve your hold or payment',
+  payment_failed: 'Retry your failed payment',
+};
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    api('/api/me/actions', { signal: ctrl.signal }).then(setActions).catch(() => {});
-    return () => ctrl.abort();
-  }, [pathname]);
+function Bell() {
+  const { data, reload } = useApi('/api/me/actions', { pollMs: 5000 });
+  const { pathname } = useLocation();
+  const { open, setOpen, ref } = useMenu();
+  const actions = (data ?? []).filter((a) => BELL_ACTION[a.kind]);
+
+  // Refresh right after navigating (e.g. once an action is done).
+  useEffect(() => { reload(); }, [pathname]);
 
   return (
     <div className="relative" ref={ref}>
@@ -54,19 +61,20 @@ function Bell() {
         )}
       </button>
       {open && (
-        <div className={`${panel} w-72`}>
+        <div className={`${panel} w-80 max-w-[calc(100vw-1.5rem)]`}>
           {actions.length === 0 ? (
-            <p className="px-3 py-3 text-sm text-pine-soft">You’re all caught up.</p>
+            <p className="px-3 py-3 text-sm text-pine-soft">You’re all caught up ✨</p>
           ) : (
             <ul>
-              {actions.map((a, i) => (
-                <li key={`${a.tripId}-${a.kind}-${i}`}>
+              {actions.map((a) => (
+                <li key={`${a.tripId}-${a.kind}`}>
                   <Link
                     to={`/trips/${a.tripId}/${ACTION_TAB[a.kind] ?? 'overview'}`}
                     onClick={() => setOpen(false)}
                     className="block rounded-xl px-3 py-2 text-sm hover:bg-mint"
                   >
-                    {a.label}
+                    <span className="block font-medium">{BELL_ACTION[a.kind]}</span>
+                    <span className="block truncate text-xs text-pine-soft">{a.tripTitle} · {a.groupName}</span>
                   </Link>
                 </li>
               ))}

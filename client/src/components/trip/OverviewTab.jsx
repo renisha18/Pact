@@ -1,4 +1,5 @@
 import { Avatar, Skeleton, btn, card } from '../ui.jsx';
+import { formatRange } from '../../lib/format.js';
 import { useApi } from '../../lib/useApi.js';
 import { ACTION_TAB, COMMIT_STAGE, EDITABLE_TRIP, activeMembers, buildStages } from '../../lib/tripState.js';
 
@@ -108,6 +109,9 @@ export default function OverviewTab({ trip, members, myStatus, isOrganizer, meId
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
       <div className="space-y-4">
+        <p className="text-sm font-medium" data-testid="trip-dates">
+          Dates: {trip.startDate ? formatRange(trip.startDate, trip.endDate) : 'deciding…'}
+        </p>
         <NextStep trip={trip} members={members} myStatus={myStatus} isOrganizer={isOrganizer} myActions={myActions}
           readiness={readiness} votes={votes} onGo={onGo} />
         <StageTracker stages={stages} onGo={onGo} />

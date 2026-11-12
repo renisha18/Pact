@@ -25,11 +25,11 @@ tripsRouter.get('/:id', requireTripMember, async (req, res) => {
       ORDER BY u.id`,
     [req.tripId],
   );
-  const { rows: [me] } = await query('SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2', [
+  const { rows: [me] } = await query('SELECT gm.role, g.name FROM group_members gm JOIN groups g ON g.id = gm.group_id WHERE gm.group_id = $1 AND gm.user_id = $2', [
     req.trip.group_id,
     req.user.id,
   ]);
-  res.json({ trip: tripPublic(req.trip), members: rows.map(tripMemberPublic), myRole: me.role, myStatus: req.trip.member_status });
+  res.json({ trip: tripPublic(req.trip), members: rows.map(tripMemberPublic), myRole: me.role, groupName: me.name, myStatus: req.trip.member_status });
 });
 
 // --- Private input: every query is scoped to req.user.id; never by a client-supplied user id.

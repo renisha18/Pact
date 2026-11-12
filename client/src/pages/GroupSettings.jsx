@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useApi } from '../lib/useApi.js';
 import { Page, Loading, ErrorNote, NotFoundCard, btn, card, input, label } from '../components/ui.jsx';
+import Breadcrumbs from '../components/Breadcrumbs.jsx';
 import { EmojiPicker, VibePicker } from '../components/GroupFields.jsx';
 
 const LEAVE_MSG = 'You have unsaved changes. Leave without saving?';
@@ -97,6 +98,7 @@ export default function GroupSettings() {
   const isOrganizer = data.members.some((m) => m.id === user.id && m.role === 'organizer');
   return (
     <Page narrow>
+      <Breadcrumbs items={[{ label: 'Dashboard', to: '/dashboard' }, { label: data.group.name, to: `/groups/${data.group.id}` }, { label: 'Settings' }]} />
       <Link to={`/groups/${data.group.id}`} className="text-sm text-pine-soft hover:text-pine">← Back to group</Link>
       <h1 className="mt-3 text-2xl font-bold">Group settings</h1>
       <SettingsForm group={data.group} isOrganizer={isOrganizer} />

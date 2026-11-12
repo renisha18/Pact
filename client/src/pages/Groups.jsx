@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
+import Breadcrumbs from '../components/Breadcrumbs.jsx';
 import GroupCards from '../components/GroupCards.jsx';
 import NewGroupModal from '../components/NewGroupModal.jsx';
 
@@ -18,6 +19,7 @@ export default function Groups() {
 
   return (
     <div className="pt-8 sm:pt-12">
+      <div className="mx-auto max-w-5xl px-4"><Breadcrumbs items={[{ label: 'Dashboard' }]} /></div>
       <GroupCards key={version} onCreate={() => setOpen(true)} />
       {showing && <NewGroupModal onClose={close} />}
     </div>

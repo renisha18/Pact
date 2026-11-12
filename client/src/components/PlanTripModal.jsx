@@ -12,8 +12,9 @@ export default function PlanTripModal({ groupId, onClose }) {
   const toast = useToast();
   const ref = useRef(null);
   const [title, setTitle] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [windowStart, setWindowStart] = useState('');
+  const [windowEnd, setWindowEnd] = useState('');
+  const [nights, setNights] = useState('4');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const today = todayIso();
@@ -45,15 +46,19 @@ export default function PlanTripModal({ groupId, onClose }) {
 
   async function submit(e) {
     e.preventDefault();
-    if (endDate <= startDate) return setError('End date must be after the start date.');
+    const n = Number(nights);
+    if (!Number.isInteger(n) || n < 1 || n > 14) return setError('Trip length must be 1–14 nights.');
+    if ((Date.parse(windowEnd) - Date.parse(windowStart)) / 86_400_000 < n) {
+      return setError('The date window must be at least as long as the trip.');
+    }
     setSaving(true);
     setError(null);
     try {
-      const trip = await api(`/api/groups/${groupId}/trips`, { method: 'POST', body: { title: title.trim(), startDate, endDate } });
+      const trip = await api(`/api/groups/${groupId}/trips`, { method: 'POST', body: { title: title.trim(), windowStart, windowEnd, nights: n } });
       toast('Trip created — everyone’s invited to share their details');
       navigate(`/trips/${trip.id}/plan`);
     } catch (err) {
-      setError(err.status === 400 ? 'Check the title and dates (trips are 1–60 nights).' : err.message);
+      setError(err.status === 400 ? 'Check the title, window and trip length (1–14 nights).' : err.message);
       setSaving(false);
     }
   }
@@ -77,13 +82,18 @@ export default function PlanTripModal({ groupId, onClose }) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="pt-start" className={label}>Start</label>
-              <input id="pt-start" type="date" className={input} value={startDate} min={today} onChange={(e) => setStartDate(e.target.value)} required />
+              <label htmlFor="pt-start" className={label}>Earliest start</label>
+              <input id="pt-start" type="date" className={input} value={windowStart} min={today} onChange={(e) => setWindowStart(e.target.value)} required />
             </div>
             <div>
-              <label htmlFor="pt-end" className={label}>End</label>
-              <input id="pt-end" type="date" className={input} value={endDate} min={startDate || today} onChange={(e) => setEndDate(e.target.value)} required />
+              <label htmlFor="pt-end" className={label}>Latest end</label>
+              <input id="pt-end" type="date" className={input} value={windowEnd} min={windowStart || today} onChange={(e) => setWindowEnd(e.target.value)} required />
             </div>
+          </div>
+          <div>
+            <label htmlFor="pt-nights" className={label}>Trip length (nights)</label>
+            <input id="pt-nights" type="number" min={1} max={14} className={input} value={nights} onChange={(e) => setNights(e.target.value)} required />
+            <p className="mt-1 text-xs text-pine-soft">Everyone picks the days they’re free; Pact finds the dates.</p>
           </div>
           <ErrorNote>{error}</ErrorNote>
           <button type="submit" disabled={saving} className={`${btn.base} ${btn.coral} w-full`}>{saving ? 'Creating…' : 'Start planning →'}</button>

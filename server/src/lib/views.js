@@ -32,7 +32,7 @@ export function groupSummary(row, actionNeeded = false) {
           id: row.next_trip_id,
           title: row.next_trip_title,
           status: row.next_trip_status,
-          startDate: row.next_trip_start_date,
+          startDate: row.next_trip_dates_status === 'deciding' || row.next_trip_dates_status === 'pick' ? null : row.next_trip_start_date,
         }
       : null,
   };
@@ -59,13 +59,17 @@ export function groupMember(row) {
   };
 }
 
+/** Start/end are placeholders until the group's dates are chosen. */
+const datesChosen = (row) => (row.dates_status ?? 'chosen') === 'chosen';
+
 export function tripSummary(row) {
   return {
     id: row.id,
     title: row.title,
     status: row.status,
-    startDate: row.start_date,
-    endDate: row.end_date,
+    startDate: datesChosen(row) ? row.start_date : null,
+    endDate: datesChosen(row) ? row.end_date : null,
+    datesStatus: row.dates_status ?? 'chosen',
   };
 }
 
@@ -85,8 +89,11 @@ export function tripPublic(row) {
     groupId: row.group_id,
     title: row.title,
     region: row.region,
-    startDate: row.start_date,
-    endDate: row.end_date,
+    startDate: datesChosen(row) ? row.start_date : null,
+    endDate: datesChosen(row) ? row.end_date : null,
+    windowStart: row.window_start ?? null,
+    windowEnd: row.window_end ?? null,
+    datesStatus: row.dates_status ?? 'chosen',
     nights: row.nights,
     status: row.status,
     chosenListingId: row.chosen_listing_id,

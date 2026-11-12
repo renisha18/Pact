@@ -9,7 +9,9 @@ import { ACTION_TAB, COMMIT_STAGE, EDITABLE_TRIP, HAS_PROPOSALS, TABS, activeMem
 import { Page, ErrorNote, NotFoundCard, Skeleton, TripStatusChip } from '../components/ui.jsx';
 import { PlanPanel, Proposals, AskPact, PlanStatus, NegotiationCard } from '../components/Planning.jsx';
 import { CommitPanel } from '../components/Commit.jsx';
+import DatesCard from '../components/trip/DatesCard.jsx';
 import PrivateForm from '../components/trip/PrivateForm.jsx';
+import Breadcrumbs from '../components/Breadcrumbs.jsx';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import TripTabs from '../components/trip/TripTabs.jsx';
 import OverviewTab from '../components/trip/OverviewTab.jsx';
@@ -95,14 +97,20 @@ export default function Trip() {
 
   return (
     <Page>
-      <Link to={`/groups/${trip.groupId}`} className="text-sm text-pine-soft hover:text-pine">← Back to group</Link>
+      <Breadcrumbs items={[
+        { label: 'Dashboard', to: '/dashboard' },
+        { label: data.groupName, to: `/groups/${trip.groupId}` },
+        { label: trip.title, to: `/trips/${trip.id}/overview` },
+        ...(tab ? [{ label: TABS.find((t) => t.id === tab).label }] : []),
+      ]} />
+      <Link to={`/groups/${trip.groupId}`} className="text-sm text-pine-soft hover:text-pine">← {data.groupName}</Link>
       <header className="mt-3">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold sm:text-3xl">{trip.title}</h1>
           <TripStatusChip status={trip.status} />
         </div>
         <p className="mt-2 text-pine-soft">
-          {trip.region} · {formatRange(trip.startDate, trip.endDate)} · {trip.nights} {trip.nights === 1 ? 'night' : 'nights'}
+          {trip.region} · {trip.startDate ? formatRange(trip.startDate, trip.endDate) : 'Dates: deciding…'} · {trip.nights} {trip.nights === 1 ? 'night' : 'nights'}
         </p>
       </header>
 
@@ -119,6 +127,8 @@ export default function Trip() {
 
         {tab === 'plan' && (
           <>
+            <DatesCard tripId={trip.id} isOrganizer={isOrganizer} editable={editable && !left} refreshKey={refreshKey}
+              onChanged={refreshAll} />
             <PrivateForm tripId={trip.id} editable={editable}
               onSaved={async () => { toast('Details saved privately'); await refreshAll(); }} />
             {!left && (

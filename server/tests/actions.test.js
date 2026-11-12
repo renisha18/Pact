@@ -48,7 +48,7 @@ describe('GET /api/me/actions', () => {
     expect(res.body.map((a) => [a.tripId, a.kind]).sort()).toEqual([
       [1, 'private_details'], [2, 'vote'], [3, 'cover'], [4, 'payment_failed'],
     ]);
-    for (const a of res.body) expect(Object.keys(a).sort()).toEqual(['groupId', 'kind', 'label', 'tripId']);
+    for (const a of res.body) expect(Object.keys(a).sort()).toEqual(['groupId', 'groupName', 'kind', 'label', 'tripId', 'tripTitle']);
   });
 
   it('another user\'s pending negotiation never appears for anyone else', async () => {

@@ -14,6 +14,7 @@ import { counterfactual } from '../lib/counterfactual.js';
 import {
   prepareNegotiations, saveNegotiations, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
 } from '../lib/negotiations.js';
+import { chooseDates } from '../lib/dates.js';
 import { proposalPublic } from '../lib/views.js';
 import { extractAll, pickAndExplain } from '../ai/plan.js';
 import { askPact } from '../ai/ask.js';
@@ -203,6 +204,28 @@ export async function runPlan(tripId, actorUserId, { retryIfStale = true } = {})
   throw new HttpError(409, STALE_PLAN_MESSAGE);
 }
 
+/**
+ * Plain code, no AI. Everyone must have shared their days. The earliest run where all
+ * members are free is saved as the trip's dates; otherwise returns { options } (counts only).
+ */
+async function resolveDates(trip, members) {
+  const { rows } = await query(
+    'SELECT user_id, day FROM member_availability WHERE trip_id = $1 ORDER BY day', [trip.id]);
+  const availability = new Map(members.map((m) => [m.user_id, new Set()]));
+  for (const r of rows) availability.get(r.user_id)?.add(r.day);
+  const missing = [...availability.values()].filter((d) => d.size === 0).length;
+  if (missing > 0) {
+    throw new HttpError(400, `${missing} ${missing === 1 ? 'member still needs' : 'members still need'} to share their days`);
+  }
+  const result = chooseDates(trip.window_start, trip.window_end, trip.nights, availability);
+  if (result.kind === 'fallback') return { options: result.options };
+  await query(
+    `UPDATE trips SET start_date = $2, end_date = $3, dates_status = 'chosen', date_options = NULL WHERE id = $1`,
+    [trip.id, result.startDate, result.endDate],
+  );
+  return result;
+}
+
 async function planRun(tripId, actorUserId, version) {
   // Everything is read AFTER the claim, so any later change is caught by saveRun.
   const { rows: [trip] } = await query('SELECT * FROM trips WHERE id = $1', [tripId]);
@@ -221,6 +244,32 @@ async function planRun(tripId, actorUserId, version) {
   const missing = members.filter((m) => m.max_budget_cents === null).length;
   if (missing > 0) {
     throw new HttpError(400, `${missing} ${missing === 1 ? 'member still needs' : 'members still need'} to submit`);
+  }
+
+  if (trip.dates_status !== 'chosen') {
+    const outcome = await resolveDates(trip, members);
+    if (outcome.options) {
+      // Nobody is named: only counts. The organizer picks, then plans again.
+      return saveRun(tripId, version, async (client, t) => {
+        await client.query('DELETE FROM proposals WHERE trip_id = $1', [tripId]); // votes cascade
+        await client.query(`UPDATE negotiations SET status = 'expired' WHERE trip_id = $1 AND status = 'pending'`, [tripId]);
+        await client.query(
+          `UPDATE trips SET active_version = $2, chosen_listing_id = NULL, dates_status = 'pick', date_options = $3,
+                  status = CASE WHEN status = 'voting' THEN 'planning' ELSE status END
+            WHERE id = $1`,
+          [tripId, version, JSON.stringify(outcome.options)],
+        );
+        await logEvent(client, tripId, actorUserId, 'dates_options', { count: outcome.options.length });
+        return {
+          status: t.status === 'voting' ? 'planning' : t.status,
+          proposals: [],
+          dateOptions: outcome.options,
+          message: 'No dates work for everyone. The organizer picks from the closest windows.',
+        };
+      });
+    }
+    trip.start_date = outcome.startDate;
+    trip.end_date = outcome.endDate;
   }
 
   const { rows: [group] } = await query('SELECT personality FROM groups WHERE id = $1', [trip.group_id]);

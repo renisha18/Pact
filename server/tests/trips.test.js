@@ -35,7 +35,7 @@ beforeAll(async () => {
   const res = await request(app)
     .post('/api/groups/1/trips')
     .set('Cookie', as(A))
-    .send({ title: 'Bali or bust', startDate: '2027-03-10', endDate: '2027-03-15' });
+    .send({ title: 'Bali or bust', windowStart: '2027-03-10', windowEnd: '2027-03-20', nights: 5 });
   expect(res.status).toBe(201);
   expect(res.body).toMatchObject({ region: 'Bali', nights: 5, status: 'collecting' });
   tripId = res.body.id;
@@ -147,16 +147,18 @@ describe('private input isolation', () => {
 describe('POST /api/groups/:id/trips', () => {
   it('rejects bad dates and non-members', async () => {
     for (const body of [
-      { title: 'x', startDate: '2027-03-10', endDate: '2027-03-10' },
-      { title: 'x', startDate: '2027-03-10', endDate: '2027-03-01' },
-      { title: 'x', startDate: '2027-02-30', endDate: '2027-03-05' },
+      { title: 'x', windowStart: '2027-03-10', windowEnd: '2027-03-12', nights: 3 },
+      { title: 'x', windowStart: '2027-03-10', windowEnd: '2027-03-01', nights: 1 },
+      { title: 'x', windowStart: '2027-02-30', windowEnd: '2027-03-05', nights: 2 },
+      { title: 'x', windowStart: '2027-03-01', windowEnd: '2027-03-30', nights: 0 },
+      { title: 'x', windowStart: '2027-03-01', windowEnd: '2027-03-30', nights: 15 },
     ]) {
       expect((await request(app).post('/api/groups/1/trips').set('Cookie', as(A)).send(body)).status).toBe(400);
     }
     const res = await request(app)
       .post('/api/groups/1/trips')
       .set('Cookie', as(OUTSIDER))
-      .send({ title: 'x', startDate: '2027-03-10', endDate: '2027-03-12' });
+      .send({ title: 'x', windowStart: '2027-03-10', windowEnd: '2027-03-14', nights: 2 });
     expect(res.status).toBe(404);
   });
 });

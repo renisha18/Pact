@@ -25,11 +25,12 @@ groupsRouter.get('/', async (req, res) => {
                  ORDER BY ord LIMIT 5) a) AS member_avatars,
             lt.title AS latest_trip_title, lt.status AS latest_trip_status,
             nt.id AS next_trip_id, nt.title AS next_trip_title,
-            nt.status AS next_trip_status, nt.start_date AS next_trip_start_date
+            nt.status AS next_trip_status, nt.start_date AS next_trip_start_date,
+            nt.dates_status AS next_trip_dates_status
        FROM groups g
        JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $1
        LEFT JOIN LATERAL (
-         SELECT t.id, t.title, t.status, t.start_date
+         SELECT t.id, t.title, t.status, t.start_date, t.dates_status
            FROM trips t
           WHERE t.group_id = g.id AND t.status <> 'cancelled' AND t.start_date >= CURRENT_DATE
           ORDER BY t.start_date, t.id
@@ -86,7 +87,7 @@ groupsRouter.get('/:id', async (req, res) => {
       [groupId],
     ),
     query(
-      `SELECT id, title, status, start_date, end_date
+      `SELECT id, title, status, start_date, end_date, dates_status
          FROM trips WHERE group_id = $1
         ORDER BY start_date DESC, id DESC`,
       [groupId],
@@ -133,16 +134,15 @@ const isoDate = z.iso.date();
 const createTripSchema = z
   .strictObject({
     title: z.string().trim().min(1).max(120),
-    startDate: isoDate,
-    endDate: isoDate,
+    windowStart: isoDate,
+    windowEnd: isoDate,
+    nights: z.number().int().min(1).max(14),
   })
-  .transform((v, ctx) => {
-    const nights = Math.round((Date.parse(v.endDate) - Date.parse(v.startDate)) / DAY_MS);
-    if (!(nights >= 1 && nights <= 60)) {
-      ctx.addIssue({ code: 'custom', message: 'Trip must be 1-60 nights', path: ['endDate'] });
-      return z.NEVER;
+  .superRefine((v, ctx) => {
+    const span = Math.round((Date.parse(v.windowEnd) - Date.parse(v.windowStart)) / DAY_MS);
+    if (span < v.nights) {
+      ctx.addIssue({ code: 'custom', message: 'The date window must be at least as long as the trip', path: ['windowEnd'] });
     }
-    return { ...v, nights };
   });
 
 // Membership is checked before the body so non-members always get a plain 404.
@@ -154,14 +154,16 @@ async function requireGroupMember(req, _res, next) {
 
 groupsRouter.post('/:id/trips', requireGroupMember, validateBody(createTripSchema), async (req, res) => {
   const { groupId } = req;
-  const { title, startDate, endDate, nights } = req.body;
+  const { title, windowStart, windowEnd, nights } = req.body;
 
   const trip = await withTransaction(async (client) => {
     const { rows: [t] } = await client.query(
-      `INSERT INTO trips (group_id, title, region, start_date, end_date, nights, created_by)
-       VALUES ($1, $2, 'Bali', $3, $4, $5, $6)
+      // start/end are placeholders (shown as "deciding…") until the plan picks real dates.
+      `INSERT INTO trips (group_id, title, region, start_date, end_date, nights, created_by,
+                          window_start, window_end, dates_status)
+       VALUES ($1, $2, 'Bali', $3::date, $3::date + $5::int, $5, $4, $3::date, $6, 'deciding')
        RETURNING *`,
-      [groupId, title, startDate, endDate, nights, req.user.id],
+      [groupId, title, windowStart, req.user.id, nights, windowEnd],
     );
     await client.query(
       `INSERT INTO trip_members (trip_id, user_id, status)

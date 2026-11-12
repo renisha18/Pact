@@ -12,6 +12,8 @@ export const TABS = [
 
 /** Which tab holds each kind of pending to-do from /api/me/actions. */
 export const ACTION_TAB = {
+  availability: 'plan',
+  dates_nudge: 'plan',
   private_details: 'plan',
   negotiation: 'plan',
   vote: 'plan',

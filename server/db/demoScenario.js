@@ -13,14 +13,16 @@ import { pool, withTransaction } from '../src/db.js';
 import { extractionCache } from '../src/ai/extract.js';
 import { filterListings } from '../src/lib/filterListings.js';
 import { counterfactual } from '../src/lib/counterfactual.js';
+import { windowDays } from '../src/lib/dates.js';
 
 const TABLES = [
   'users', 'groups', 'group_members', 'listings', 'trips', 'trip_members',
   'private_inputs', 'proposals', 'votes', 'shares', 'covers', 'payments',
-  'event_log', 'group_taste', 'negotiations', 'consent_overrides',
+  'event_log', 'group_taste', 'negotiations', 'consent_overrides', 'member_availability',
 ];
 
 const NIGHTS = 3;
+const WINDOW_DAYS = 7; // everyone is free all week, so the plan picks the window's first 3 nights
 const DAY_MS = 86_400_000;
 
 // Zoe is seeded like the normal demo, but is not in this group.
@@ -132,9 +134,11 @@ export async function resetDemo() {
 
     const start = Date.now() + 45 * DAY_MS;
     const { rows: [trip] } = await client.query(
-      `INSERT INTO trips (group_id, title, region, start_date, end_date, nights, created_by)
-       VALUES ($1, 'Bali with the Goa Gang', 'Bali', $2, $3, $4, $5) RETURNING id`,
-      [group.id, isoDay(start), isoDay(start + NIGHTS * DAY_MS), NIGHTS, userIds.Riya],
+      // Dates stay "deciding…" until Riya presses Plan; start/end are placeholders until then.
+      `INSERT INTO trips (group_id, title, region, start_date, end_date, nights, created_by,
+                          window_start, window_end, dates_status)
+       VALUES ($1, 'Bali with the Goa Gang', 'Bali', $2, $3, $4, $5, $2, $6, 'deciding') RETURNING id`,
+      [group.id, isoDay(start), isoDay(start + NIGHTS * DAY_MS), NIGHTS, userIds.Riya, isoDay(start + WINDOW_DAYS * DAY_MS)],
     );
     for (const p of PEOPLE) {
       await client.query(
@@ -148,6 +152,10 @@ export async function resetDemo() {
          VALUES ($1, $2, 'submitted', $3)`,
         [trip.id, userIds[p.name], p.commitment],
       );
+      await client.query(
+        `INSERT INTO member_availability (trip_id, user_id, day) SELECT $1, $2, unnest($3::date[])`,
+        [trip.id, userIds[p.name], windowDays(isoDay(start), isoDay(start + WINDOW_DAYS * DAY_MS))],
+      );
     }
 
     return { groupId: group.id, tripId: trip.id, nights: NIGHTS, ...outcome };
@@ -160,9 +168,10 @@ const usd = (cents) => `$${(cents / 100).toFixed(0)}`;
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
     const r = await resetDemo();
-    console.log(`Demo ready: group "Goa Gang 2.0" (id ${r.groupId}), ${r.nights}-night trip (id ${r.tripId}), all four inputs submitted.`);
+    console.log(`Demo ready: group "Goa Gang 2.0" (id ${r.groupId}), ${r.nights}-night trip (id ${r.tripId}), all four inputs and availability submitted.`);
     console.log(`
 Expected outcome when Riya presses "Plan" (log in as Riya, Meera and Kabir to follow along):
+  0. Dates: everyone is free all week, so Pact picks the first 3 nights of the window.
   1. No stay fits as-is. Group sees only "Pact is working something out privately…".
   2. Only Meera gets a private question: be okay with shared rooms.
      It unlocks ${r.stay.name} (${r.wishes.join(' + ')}, your wishes), your share ${usd(r.shareCents)}.

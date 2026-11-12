@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS trips (
   plan_version        INT NOT NULL DEFAULT 0,
   active_version      INT NOT NULL DEFAULT 0,
   planning_started_at TIMESTAMPTZ,
+  -- Flexible dates: start_date/end_date are placeholders until dates_status = 'chosen'.
+  window_start        DATE,
+  window_end          DATE,
+  dates_status        TEXT NOT NULL DEFAULT 'chosen' CHECK (dates_status IN ('deciding', 'pick', 'chosen')),
+  date_options        JSONB, -- fallback windows with member COUNTS only, never names
   CHECK (end_date > start_date)
 );
 CREATE INDEX IF NOT EXISTS trips_group_idx ON trips(group_id);
@@ -206,3 +211,11 @@ CREATE TABLE IF NOT EXISTS consent_overrides (
   CHECK (kind <> 'room_type' OR room_type IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS consent_overrides_trip_idx ON consent_overrides(trip_id, status);
+
+-- PRIVATE: the days a member can go, within the trip's date window. Owner-only.
+CREATE TABLE IF NOT EXISTS member_availability (
+  trip_id INT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day     DATE NOT NULL,
+  PRIMARY KEY (trip_id, user_id, day)
+);

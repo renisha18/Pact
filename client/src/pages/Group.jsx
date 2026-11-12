@@ -7,6 +7,7 @@ import { formatRange } from '../lib/format.js';
 import {
   Page, ErrorNote, NotFoundCard, Skeleton, TripStatusChip, Avatar, btn, card, input,
 } from '../components/ui.jsx';
+import Breadcrumbs from '../components/Breadcrumbs.jsx';
 import PlanTripModal from '../components/PlanTripModal.jsx';
 
 function InviteBox({ url }) {
@@ -55,7 +56,7 @@ function TripCard({ trip, actionNeeded }) {
           <span className="absolute top-4 right-4 rounded-full bg-coral px-2.5 py-0.5 text-[11px] font-bold text-cloud">Action needed</span>
         )}
         <h3 className="truncate pr-24 font-bold">{trip.title}</h3>
-        <p className="mt-1 text-sm text-pine-soft">{formatRange(trip.startDate, trip.endDate)}</p>
+        <p className="mt-1 text-sm text-pine-soft">{trip.startDate ? formatRange(trip.startDate, trip.endDate) : 'Dates: deciding…'}</p>
         <div className="mt-3"><TripStatusChip status={trip.status} /></div>
       </Link>
     </li>
@@ -101,6 +102,8 @@ export default function Group() {
 
   return (
     <Page>
+      <Breadcrumbs items={[{ label: 'Dashboard', to: '/dashboard' }, { label: group.name }]} />
+      <Link to="/dashboard" className="mb-3 inline-block text-sm text-pine-soft hover:text-pine">← All groups</Link>
       <header className="flex items-center gap-4">
         <span className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-cloud text-4xl ring-1 ring-mint-dark" aria-hidden="true">
           {group.emoji}
