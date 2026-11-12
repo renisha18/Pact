@@ -12,7 +12,7 @@ const FEATURES = [
 const STEPS = [
   { title: 'Share privately', body: 'Each person adds a budget and what they care about. Only they can see it.' },
   { title: 'Agent proposes', body: 'Pact suggests stays that fit everyone, without revealing anyone’s numbers.' },
-  { title: 'Everyone commits', body: 'The group votes, then each person holds their own share, set by a cap-aware fair split.' },
+  { title: 'Everyone commits', body: 'The group votes, then each person holds their share. Everyone pays the same share; your private budget only decides which stays the group considers.' },
   { title: 'Booked, nobody fronted', body: 'Once everyone is in, it’s booked. No IOUs, no chasing.' },
 ];
 

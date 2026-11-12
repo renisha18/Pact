@@ -33,6 +33,9 @@ const BELL_ACTION = {
   vote: 'Cast your vote',
   commit: 'Approve your hold or payment',
   payment_failed: 'Retry your failed payment',
+  cover_offered: 'Answer a friend’s offer to cover you',
+  cover_approve: 'Approve your cover hold',
+  repayment_due: 'Repayment due',
 };
 
 function Bell() {
@@ -73,7 +76,7 @@ function Bell() {
                     onClick={() => setOpen(false)}
                     className="block rounded-xl px-3 py-2 text-sm hover:bg-mint"
                   >
-                    <span className="block font-medium">{BELL_ACTION[a.kind]}</span>
+                    <span className="block font-medium">{a.kind === 'repayment_due' ? a.label : BELL_ACTION[a.kind]}</span>
                     <span className="block truncate text-xs text-pine-soft">{a.tripTitle} · {a.groupName}</span>
                   </Link>
                 </li>

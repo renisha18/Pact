@@ -343,7 +343,7 @@ function MyShareCard({ tripId }) {
       <p className="mt-4 flex items-center gap-2 rounded-xl bg-mint px-3 py-2 text-xs text-pine-soft">
         <PixelLock className="h-3 w-3" /> Only you see this.
       </p>
-      <p className="mt-2 text-xs text-pine-soft">Worked out with Pact’s cap-aware fair split: nobody pays more than they said they could.</p>
+      <p className="mt-2 text-xs text-pine-soft">Everyone pays the same share. Your private budget only decides which stays the group considers.</p>
     </section>
   );
 }

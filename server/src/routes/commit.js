@@ -10,6 +10,7 @@ import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
 import { paymentSelf } from '../lib/views.js';
+import { repaymentPlan } from '../lib/repayment.js';
 import { PayPalError } from '../paypal/client.js';
 import {
   centsToUsd, createAuthorizeOrder, createCaptureOrder, getOrder, authorizeOrder, captureOrder,
@@ -79,6 +80,16 @@ async function shareOf(tripId, userId) {
     [tripId, userId],
   );
   return rows[0]?.amount_cents ?? null;
+}
+
+/** The offer the member has accepted that this user (the coverer) must now approve. */
+async function acceptedOfferOf(tripId, covererId) {
+  const { rows } = await query(
+    `SELECT id, covered_id, amount_cents, installments FROM cover_offers
+      WHERE trip_id = $1 AND coverer_id = $2 AND status = 'accepted'`,
+    [tripId, covererId],
+  );
+  return rows[0] ?? null;
 }
 
 /** Is this user's own share already secured, or being secured by them or a friend? */
@@ -241,6 +252,9 @@ async function confirmOrder(req, kind) {
   if (kind === 'cover_hold') {
     const { rows: c } = await query('SELECT 1 FROM covers WHERE trip_id = $1 AND covered_id = $2', [tripId, shareUserId]);
     if (c.length) throw new HttpError(409, 'That share is already covered');
+    // No PayPal call without the member's agreement.
+    const offer = await acceptedOfferOf(tripId, user.id);
+    if (!offer || offer.covered_id !== shareUserId) throw new HttpError(409, 'Nobody has accepted your offer yet');
   }
 
   await assertOrderMatches(row);
@@ -274,9 +288,22 @@ async function confirmOrder(req, kind) {
     );
     if (rowCount === 0 || update.status === 'failed') return;
     if (kind === 'cover_hold') {
+      // Both sides have agreed: only now does the cover (and its repayment plan) exist.
       await db.query('INSERT INTO covers (trip_id, coverer_id, covered_id, amount_cents) VALUES ($1, $2, $3, $4)', [
         tripId, user.id, row.covers_user_id, row.amount_cents,
       ]);
+      const { rows: [offer] } = await db.query(
+        `UPDATE cover_offers SET status = 'covered'
+          WHERE trip_id = $1 AND coverer_id = $2 AND covered_id = $3 AND status = 'accepted'
+          RETURNING id, installments`,
+        [tripId, user.id, row.covers_user_id],
+      );
+      for (const i of offer ? repaymentPlan(row.amount_cents, offer.installments, req.trip.end_date) : []) {
+        await db.query(
+          'INSERT INTO cover_installments (offer_id, n, amount_cents, due_date) VALUES ($1, $2, $3, $4)',
+          [offer.id, i.n, i.amountCents, i.dueDate],
+        );
+      }
     } else {
       await db.query(`UPDATE trip_members SET status = 'committed' WHERE trip_id = $1 AND user_id = $2`, [tripId, user.id]);
     }
@@ -303,7 +330,10 @@ commitRouter.post('/:id/commit/payment', requireTripMember, requireActiveMember,
 commitRouter.post('/:id/commit/payment/confirm', requireTripMember, requireActiveMember, moneyLimiter,
   validateBody(confirmSchema), async (req, res) => res.json(await confirmOrder(req, 'payment')));
 
-/** PRIVATE: next need_time share nobody is securing (excluding the caller). Never return its user_id to a client. */
+/**
+ * PRIVATE: next need_time share nobody is securing or has an open offer on (excluding the caller, and
+ * anyone who already declined the caller). Never return its user_id to a client.
+ */
 export async function findUncovered(db, tripId, excludeUserId) {
   const { rows } = await db.query(
     `SELECT s.user_id, s.amount_cents FROM shares s
@@ -311,6 +341,8 @@ export async function findUncovered(db, tripId, excludeUserId) {
       WHERE s.trip_id = $1 AND s.user_id <> $2 AND s.amount_cents > 0
         AND tm.status <> 'dropped' AND tm.commitment_type = 'need_time'
         AND NOT EXISTS (SELECT 1 FROM covers c WHERE c.trip_id = s.trip_id AND c.covered_id = s.user_id)
+        AND NOT EXISTS (SELECT 1 FROM cover_offers o WHERE o.trip_id = s.trip_id AND o.covered_id = s.user_id
+                          AND (o.status IN ('offered', 'accepted') OR (o.status = 'declined' AND o.coverer_id = $2)))
         AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.trip_id = s.trip_id
                           AND (p.user_id = s.user_id AND p.kind IN ('hold', 'payment')
                                OR p.covers_user_id = s.user_id AND p.kind = 'cover_hold')
@@ -332,12 +364,21 @@ commitRouter.get('/:id/cover/available', requireTripMember, async (req, res) => 
   res.json({ available: open.length > 0, amountCents: open[0]?.amount_cents ?? null });
 });
 
+// Step 3 of a cover: the coverer approves the PayPal hold. Only possible once the member has accepted
+// THEIR offer; the covers row is created when this hold is confirmed.
 commitRouter.post('/:id/cover', requireTripMember, requireActiveMember, moneyLimiter, noBody, async (req, res) => {
   const { tripId, user } = req;
   if (!['committing', 'needs_attention'].includes(req.trip.status)) {
     throw new HttpError(409, 'This trip isn’t taking commitments right now');
   }
   if (req.trip.member_status !== 'committed') throw new HttpError(409, 'Commit your own share first');
+
+  const offer = await acceptedOfferOf(tripId, user.id);
+  if (!offer) throw new HttpError(409, 'Nobody has accepted your offer yet');
+  const share = await shareOf(tripId, offer.covered_id);
+  if (share !== offer.amount_cents) throw new HttpError(409, 'The shares changed. Start again.');
+  const taken = await shareTaken(tripId, offer.covered_id);
+  if (taken.secured || taken.covered) throw new HttpError(409, 'That share is already taken care of');
 
   const { rows: mine } = await query(
     `SELECT id, paypal_order_id, amount_cents FROM payments
@@ -346,24 +387,15 @@ commitRouter.post('/:id/cover', requireTripMember, requireActiveMember, moneyLim
       ORDER BY id DESC LIMIT 1`,
     [tripId, user.id],
   );
-  if (mine.length) return res.status(201).json({ orderId: mine[0].paypal_order_id, amountCents: mine[0].amount_cents, coveringFor: 'a friend' });
+  if (mine.length) return res.status(201).json({ orderId: mine[0].paypal_order_id, amountCents: mine[0].amount_cents });
 
-  const row = await withTransaction(async (db) => {
-    await db.query('SELECT id FROM trips WHERE id = $1 FOR UPDATE', [tripId]); // one claim at a time
-    const open = await findUncovered(db, tripId, user.id);
-    if (open.length === 0) return null;
-    const { rows: [r] } = await db.query(
-      `INSERT INTO payments (trip_id, user_id, kind, amount_cents, status, covers_user_id)
-       VALUES ($1, $2, 'cover_hold', $3, 'created', $4)
-       RETURNING id, trip_id, user_id, kind, amount_cents`,
-      [tripId, user.id, open[0].amount_cents, open[0].user_id],
-    );
-    return r;
-  });
-  if (!row) throw new HttpError(409, 'Nobody needs covering right now. Thank you though!');
-
-  // Response never includes the covered member's id or name.
-  res.status(201).json({ orderId: await openOrder(row), amountCents: row.amount_cents, coveringFor: 'a friend' });
+  const { rows: [row] } = await query(
+    `INSERT INTO payments (trip_id, user_id, kind, amount_cents, status, covers_user_id)
+     VALUES ($1, $2, 'cover_hold', $3, 'created', $4)
+     RETURNING id, trip_id, user_id, kind, amount_cents`,
+    [tripId, user.id, offer.amount_cents, offer.covered_id],
+  );
+  res.status(201).json({ orderId: await openOrder(row), amountCents: row.amount_cents });
 });
 
 commitRouter.post('/:id/cover/confirm', requireTripMember, requireActiveMember, moneyLimiter,
@@ -461,6 +493,7 @@ commitRouter.post('/:id/book', requireTripMember, requireOrganizer, moneyLimiter
       await db.query(`UPDATE payments SET status = 'failed', updated_at = now() WHERE id = $1`, [p.id]);
       if (p.kind === 'cover_hold') {
         await db.query('DELETE FROM covers WHERE trip_id = $1 AND covered_id = $2', [tripId, p.covers_user_id]);
+        await db.query(`DELETE FROM cover_offers WHERE trip_id = $1 AND covered_id = $2`, [tripId, p.covers_user_id]);
       } else {
         await db.query(`UPDATE trip_members SET status = 'submitted' WHERE trip_id = $1 AND user_id = $2`, [tripId, p.user_id]);
       }
@@ -531,6 +564,7 @@ commitRouter.post('/:id/leave', requireTripMember, requireActiveMember, moneyLim
   await withTransaction(async (db) => {
     await db.query('DELETE FROM shares WHERE trip_id = $1', [tripId]);
     await db.query('DELETE FROM covers WHERE trip_id = $1', [tripId]);
+    await db.query('DELETE FROM cover_offers WHERE trip_id = $1', [tripId]); // installments cascade
     await db.query(`UPDATE trip_members SET status = 'submitted' WHERE trip_id = $1 AND status = 'committed'`, [tripId]);
     await db.query(
       `UPDATE trips SET status = 'planning', chosen_listing_id = NULL

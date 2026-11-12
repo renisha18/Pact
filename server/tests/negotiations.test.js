@@ -48,7 +48,8 @@ const forbiddenFor = (me) => others(me).flatMap((u) => [NAMES[u], `SECRET-${'ABC
 
 beforeAll(async () => {
   // 1 night, 3 guests. Dorm: strict-avoided by A. Shared: preferred-avoided by B.
-  // Villa: $300 vs caps $250. Nothing fits; fewer nights is impossible.
+  // Villa: $240 -> $80 each. Meera ($70) is the only one short, so she is the only budget ask.
+  // Nothing fits as-is; fewer nights is impossible.
   await pg.exec(`
     INSERT INTO users (name, email) VALUES ('Riya', 'r@pact.demo'), ('Arjun', 'a@pact.demo'), ('Meera', 'm@pact.demo');
     INSERT INTO groups (name, invite_token, personality) VALUES ('G', 'tok', 'wholesome');
@@ -63,7 +64,7 @@ beforeAll(async () => {
     INSERT INTO listings (name, area, price_per_night_cents, max_guests, room_type, amenities) VALUES
       ('Dorm Den', 'Kuta', 3000, 6, 'mixed_dorm', '{wifi}'),
       ('Shared Nest', 'Canggu', 6000, 6, 'shared_rooms', '{wifi}'),
-      ('Private Villa', 'Ubud', 30000, 6, 'private_rooms', '{pool}');
+      ('Private Villa', 'Ubud', 24000, 6, 'private_rooms', '{pool}');
   `);
   for (const trip of [1, 2, 3, 4, 5]) {
     for (const u of [A, B, C]) {
@@ -94,27 +95,28 @@ describe('negotiations', () => {
 
   it('asks at most 2 members, smallest change first; strict items are never negotiated', async () => {
     const { rows } = await pg.query(`SELECT user_id, change_json FROM negotiations WHERE trip_id = 1 ORDER BY user_id`);
-    expect(rows.map((r) => [r.user_id, r.change_json.change.kind])).toEqual([[A, 'raiseBudget'], [B, 'allowRoomType']]);
+    expect(rows.map((r) => [r.user_id, r.change_json.change.kind])).toEqual([[B, 'allowRoomType'], [C, 'raiseBudget']]);
     expect(JSON.stringify(rows)).not.toContain('mixed_dorm');
 
     const b = await get(1, B);
     expect(b.status).toBe(200);
     expect(b.body).toMatchObject({
       kind: 'allowRoomType', roomType: 'shared_rooms', stay: { name: 'Shared Nest' },
-      newShareCents: 2000, matchesOwnWishes: ['wifi'], responses: ['accept', 'reject', 'another'],
+      newShareCents: 2000, matchesOwnWishes: ['wifi'], responses: ['accept', 'reject'], // no alternative: budget asks are never alternatives
     });
     negB = b.body.id;
 
-    const a = await get(1, A);
-    expect(a.body).toMatchObject({ kind: 'raiseBudget', raiseByCents: 5000, newShareCents: 15000 });
-    expect(a.body.responses).toContain('more_time');
-    expect(a.body.message).toMatch(/if you need more time/);
+    // Meera is asked for exactly her own gap to the equal share ($80 - $70).
+    const c = await get(1, C);
+    expect(c.body).toMatchObject({ kind: 'raiseBudget', raiseByCents: 1000, newShareCents: 8000 });
+    expect(c.body.responses).toContain('more_time');
+    expect(c.body.message).toMatch(/if you need more time/);
 
-    expect((await get(1, C)).status).toBe(404);
+    expect((await get(1, A)).status).toBe(404);
   });
 
   it('message contains no other member\'s data and says no is fine', async () => {
-    for (const u of [A, B]) {
+    for (const u of [B, C]) {
       const { body } = await get(1, u);
       expect(body.message).toContain('Saying no is completely fine');
       for (const f of forbiddenFor(u)) expect(body.message).not.toContain(f);
@@ -148,19 +150,27 @@ describe('negotiations', () => {
          FROM consent_overrides o JOIN listings l ON l.id = o.listing_id WHERE o.trip_id = 1`,
     );
     expect(ov).toEqual([{ user_id: B, name: 'Shared Nest', kind: 'room_type', accepted_max_share_cents: 2000, room_type: 'shared_rooms', status: 'active' }]);
-    expect((await get(1, A)).status).toBe(404); // A's ask is moot now
+    expect((await get(1, C)).status).toBe(404); // Meera's ask is moot now
     const props = await request(app).get('/api/trips/1/proposals').set('Cookie', as(C));
     expect(props.body.notice).toBeNull();
   });
 
   it('another gives one alternative; rejecting everything shows the public fallback', async () => {
+    // Arjun's budget drops to $70 for this trip: now he AND Meera are $10 short of the $80 share.
+    await request(app).put('/api/trips/2/private-input').set('Cookie', as(B)).send({
+      maxBudgetUsd: 70, preferencesText: TEXT[B][0], comfortText: TEXT[B][1], commitmentType: 'hold',
+    });
     await request(app).post('/api/trips/2/plan').set('Cookie', as(A));
-    // A (the one budget ask) declines first, so B's budget alternative is allowed.
-    const a = await get(2, A);
-    expect((await respond(2, a.body.id, A, 'reject')).body.notice).toBeUndefined();
+    // Both raisers are asked together, each for exactly their own amount.
+    const c = await get(2, C);
+    expect(c.body).toMatchObject({ kind: 'raiseBudget', raiseByCents: 1000, newShareCents: 8000 });
     const first = await get(2, B);
+    expect(first.body).toMatchObject({ kind: 'raiseBudget', raiseByCents: 1000, newShareCents: 8000 });
+    expect((await respond(2, c.body.id, C, 'reject')).body.notice).toBeUndefined(); // Arjun is still pending
+
+    // The alternative is never another money ask.
     const alt = await respond(2, first.body.id, B, 'another');
-    expect(alt.body.negotiation).toMatchObject({ kind: 'raiseBudget' });
+    expect(alt.body.negotiation).toMatchObject({ kind: 'allowRoomType' });
     expect(alt.body.negotiation.responses).not.toContain('another');
 
     expect((await respond(2, alt.body.negotiation.id, B, 'reject')).body.notice).toBe(EXHAUSTED);
@@ -168,34 +178,32 @@ describe('negotiations', () => {
     const props = await request(app).get('/api/trips/2/proposals').set('Cookie', as(C));
     expect(props.body.notice).toBe(EXHAUSTED);
 
-    // Re-planning never re-asks what was declined; it moves on to whoever wasn't asked.
+    // Re-planning never re-asks what was declined.
     const replan = await request(app).post('/api/trips/2/plan').set('Cookie', as(A));
-    expect(replan.body.message).toBe(WORKING);
-    expect((await get(2, A)).status).toBe(404);
-    expect((await get(2, B)).status).toBe(404);
-    expect((await get(2, C)).body.kind).toBe('raiseBudget');
+    expect(replan.body.message).toBe(EXHAUSTED);
+    for (const u of [A, B, C]) expect((await get(2, u)).status).toBe(404);
   });
 
   it('editing private input expires only that member\'s pending ask', async () => {
     await request(app).post('/api/trips/4/plan').set('Cookie', as(A));
-    const a = await get(4, A);
+    const a = await get(4, C);
     const b = await get(4, B);
     expect(a.body.kind).toBe('raiseBudget');
 
-    const put = await request(app).put('/api/trips/4/private-input').set('Cookie', as(A)).send({
-      maxBudgetUsd: 90, preferencesText: TEXT[A][0], comfortText: TEXT[A][1], commitmentType: 'hold',
+    const put = await request(app).put('/api/trips/4/private-input').set('Cookie', as(C)).send({
+      maxBudgetUsd: 75, preferencesText: TEXT[C][0], comfortText: TEXT[C][1], commitmentType: 'hold',
     });
     expect(put.status).toBe(200);
-    expect((await get(4, A)).status).toBe(404);
-    expect((await respond(4, a.body.id, A, 'accept')).status).toBe(409); // stale ask can't be accepted
-    const { rows: [pi] } = await pg.query('SELECT max_budget_cents FROM private_inputs WHERE trip_id = 4 AND user_id = $1', [A]);
-    expect(pi.max_budget_cents).toBe(9000); // not 9000 + the stale raise
+    expect((await get(4, C)).status).toBe(404);
+    expect((await respond(4, a.body.id, C, 'accept')).status).toBe(409); // stale ask can't be accepted
+    const { rows: [pi] } = await pg.query('SELECT max_budget_cents FROM private_inputs WHERE trip_id = 4 AND user_id = $1', [C]);
+    expect(pi.max_budget_cents).toBe(7500); // not 7500 + the stale raise
     expect((await get(4, B)).body.id).toBe(b.body.id); // B untouched
   });
 
-  it('a budget alternative is not offered while another member\'s budget ask is open', async () => {
+  it('a budget ask is never offered as an alternative', async () => {
     await request(app).post('/api/trips/5/plan').set('Cookie', as(A));
-    expect((await get(5, A)).body.kind).toBe('raiseBudget');
+    expect((await get(5, C)).body.kind).toBe('raiseBudget');
     const b = await get(5, B);
     const res = await respond(5, b.body.id, B, 'another');
     expect(res.body.response).toBe('reject');
@@ -203,10 +211,10 @@ describe('negotiations', () => {
     const { rows } = await pg.query(
       `SELECT user_id FROM negotiations WHERE trip_id = 5 AND status = 'pending' AND change_json->'change'->>'kind' = 'raiseBudget'`,
     );
-    expect(rows.map((r) => r.user_id)).toEqual([A]);
+    expect(rows.map((r) => r.user_id)).toEqual([C]);
   });
 
-  it('openNegotiations asks at most one member for money per shortfall', async () => {
+  it('openNegotiations asks a stay\'s raisers together, at most 2 members', async () => {
     const { prepareNegotiations, saveNegotiations } = await import('../src/lib/negotiations.js');
     // prepare (AI messages, no transaction) + save (expires older asks), as the planner does.
     const openNegotiations = async (db, tripId, options, ctx) => {
@@ -216,27 +224,28 @@ describe('negotiations', () => {
       await saveNegotiations(db, tripId, t.plan_version, result.asks);
       return { outcome: result.outcome };
     };
-    const raise = (userId) => ({ scope: 'member', userId, change: { kind: 'raiseBudget', byCents: 5000 },
-      unlockedListingIds: [3], listingId: 3, newShareCents: 15000, matchesOwnWishes: [] });
+    const raise = (userId, byCents = 1000) => ({ scope: 'member', userId, change: { kind: 'raiseBudget', byCents },
+      unlockedListingIds: [3], listingId: 3, newShareCents: 8000, matchesOwnWishes: [], unit: 'budget:3' });
     const allow = (userId) => ({ scope: 'member', userId, change: { kind: 'allowRoomType', roomType: 'private_rooms' },
       unlockedListingIds: [2], listingId: 2, newShareCents: 2000, matchesOwnWishes: [] });
     const { rows: listings } = await pg.query('SELECT id, name, area FROM listings');
     const ctx = { personality: 'chill', extracted: new Map(), listingsById: new Map(listings.map((l) => [l.id, l])), privateInputs: [] };
     const pending = async () => (await pg.query(
-      `SELECT user_id, change_json->'change'->>'kind' AS kind FROM negotiations WHERE trip_id = 5 AND status = 'pending' ORDER BY user_id`,
-    )).rows.map((r) => [r.user_id, r.kind]);
+      `SELECT user_id, change_json->'change'->>'kind' AS kind, change_json->'change'->>'byCents' AS by
+         FROM negotiations WHERE trip_id = 5 AND status = 'pending' ORDER BY user_id`,
+    )).rows.map((r) => [r.user_id, r.kind, r.by]);
 
-    // Second member's budget ask is replaced by their non-budget one.
-    expect(await openNegotiations(pg, 5, [raise(A), raise(B), allow(B)], ctx)).toEqual({ outcome: 'negotiating' });
-    expect(await pending()).toEqual([[A, 'raiseBudget'], [B, 'allowRoomType']]);
+    // Both raisers of one stay are asked, each for their own amount; nobody else (max 2 members).
+    expect(await openNegotiations(pg, 5, [raise(A, 500), raise(B, 1000), allow(C)], ctx)).toEqual({ outcome: 'negotiating' });
+    expect(await pending()).toEqual([[A, 'raiseBudget', '500'], [B, 'raiseBudget', '1000']]);
 
-    // With no non-budget option, the second member is skipped (not asked for money too).
-    await openNegotiations(pg, 5, [raise(A), raise(B), raise(C)], ctx);
-    expect(await pending()).toEqual([[A, 'raiseBudget']]);
+    // A cheaper non-budget change for a member comes first; a budget unit that includes them is skipped.
+    await openNegotiations(pg, 5, [allow(A), raise(A), raise(B)], ctx);
+    expect(await pending()).toEqual([[A, 'allowRoomType', null]]);
   });
 
   it('fewer nights becomes a public Plan B, with no private asks', async () => {
-    // T3 is 2 nights. Cabin: 2 x $200 = $400 > $250 of caps, but 1 night ($200) fits.
+    // T3 is 2 nights. Cabin: 2 x $200 = $400 -> $133 each, over every budget; 1 night ($200 -> $67 each) fits.
     await pg.query(`INSERT INTO listings (name, area, price_per_night_cents, max_guests, room_type) VALUES ('Cabin', 'Sidemen', 20000, 6, 'private_rooms')`);
     const plan = await request(app).post('/api/trips/3/plan').set('Cookie', as(A));
     expect(plan.body.planB).toEqual({ nights: 1 });

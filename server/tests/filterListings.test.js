@@ -42,9 +42,10 @@ describe('filterListings', () => {
     expect(ids(out)).toEqual([2]);
   });
 
-  it('excludes a listing the group cannot fairly afford', () => {
-    // caps sum to 40000; listing 1 costs 5 x 10000 = 50000, listing 2 costs 5 x 8000 = 40000
-    const members = [member(1, 5000), member(2, 5000), member(3, 15000), member(4, 15000)];
+  it('excludes a listing whose equal share is above any member\'s budget', () => {
+    // Combined budgets are $800, but two members top out at $100.
+    // Listing 1: 5 x 10000 = 50000 -> 12500 each (too much for two members). Listing 2: 5 x 8000 = 40000 -> 10000 each.
+    const members = [member(1, 10000), member(2, 10000), member(3, 30000), member(4, 30000)];
     const out = filterListings(
       [listing(1), listing(2, { price_per_night_cents: 8000 })],
       members, 5, 4,

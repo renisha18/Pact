@@ -24,6 +24,8 @@ export async function actionsFor(userId) {
             (t.status = 'voting'
                AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.trip_id = t.id AND v.user_id = tm.user_id)) AS needs_vote,
             (t.status = 'committing' AND tm.status <> 'committed') AS needs_commit,
+            EXISTS (SELECT 1 FROM cover_offers o WHERE o.trip_id = t.id AND o.covered_id = tm.user_id AND o.status = 'offered') AS cover_offered,
+            EXISTS (SELECT 1 FROM cover_offers o WHERE o.trip_id = t.id AND o.coverer_id = tm.user_id AND o.status = 'accepted') AS cover_approve,
             (t.status = 'needs_attention' AND COALESCE((
                SELECT p.status = 'failed' FROM payments p
                 WHERE p.trip_id = t.id AND p.user_id = tm.user_id AND p.kind IN ('hold', 'payment')
@@ -45,6 +47,8 @@ export async function actionsFor(userId) {
     if (r.needs_details) add(r, 'private_details', 'Add your private details');
     if (r.needs_negotiation) add(r, 'negotiation', 'Pact has a private question for you');
     if (r.needs_vote) add(r, 'vote', 'Cast your vote');
+    if (r.cover_offered) add(r, 'cover_offered', 'A friend offered to cover your share');
+    if (r.cover_approve) add(r, 'cover_approve', 'Approve your cover hold');
     if (r.needs_commit) add(r, 'commit', 'Secure your share');
     if (r.payment_failed) add(r, 'payment_failed', 'Your payment failed — try again');
     if (r.member_status === 'committed' && ['committing', 'needs_attention'].includes(r.trip_status)) {
@@ -52,5 +56,18 @@ export async function actionsFor(userId) {
       if (open.length) add(r, 'cover', 'A friend needs more time — you can cover their share');
     }
   }
+
+  // Repayment reminders outlive the trip (they fall due after it), so they are looked up on their own.
+  const { rows: due } = await query(
+    `SELECT DISTINCT t.id AS trip_id, t.group_id, t.title AS trip_title, g.name AS group_name
+       FROM cover_installments ci
+       JOIN cover_offers o ON o.id = ci.offer_id AND o.status = 'covered' AND o.covered_id = $1
+       JOIN trips t ON t.id = o.trip_id AND t.status <> 'cancelled'
+       JOIN groups g ON g.id = t.group_id
+      WHERE ci.paid_at IS NULL AND ci.due_date <= CURRENT_DATE
+      ORDER BY t.id`,
+    [userId],
+  );
+  for (const r of due) add(r, 'repayment_due', `Repayment due — ${r.trip_title}`);
   return out;
 }

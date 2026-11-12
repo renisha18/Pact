@@ -1,5 +1,5 @@
 // Private negotiations: when no stay fits everyone, Pact privately asks at most
-// two members for one small change each (from counterfactual.js). Rows are
+// two members for one small change each (budget: at most two raisers, each for their own amount) (from counterfactual.js). Rows are
 // PRIVATE to their owner. The group only ever sees a generic notice: no
 // counts, no names. event_log details stay empty here.
 import { writeNegotiationMessage } from '../ai/negotiate.js';
@@ -12,6 +12,7 @@ export const EXHAUSTED_MESSAGE = "Pact couldn't find a plan that fits everyone â
 // (newer plan, or the member edited their input), so it may be asked again.
 const DECLINED = ['rejected'];
 const isBudget = (o) => o.change.kind === 'raiseBudget';
+const groupBy = (xs, key) => xs.reduce((m, x) => m.set(key(x), [...(m.get(key(x)) ?? []), x]), new Map());
 const optionKey = (o) => `${o.change.kind}:${o.change.roomType ?? ''}`;
 
 /** The stored change: everything the owner needs, nothing about anyone else. */
@@ -73,23 +74,32 @@ export async function prepareNegotiations(db, tripId, options, ctx) {
   );
   const declinedKeys = new Set(declined.map((d) => `${d.user_id}|${optionKey(d.change_json)}`));
 
-  const perMember = new Map(); // userId -> remaining options, smallest change first
-  for (const o of options) {
-    if (o.scope !== 'member' || declinedKeys.has(`${o.userId}|${optionKey(o)}`)) continue;
-    if (!perMember.has(o.userId)) perMember.set(o.userId, []);
-    perMember.get(o.userId).push(o);
+  // Budget asks come as one unit: every member below the stay's equal share, each asked for
+  // exactly their own amount. A unit is skipped if any of its members already said no.
+  const isDeclined = (o) => declinedKeys.has(`${o.userId}|${optionKey(o)}`);
+  const memberOpts = options.filter((o) => o.scope === 'member');
+  const budgetOpts = memberOpts.filter(isBudget);
+  const units = [];
+  for (const [userId, opts] of groupBy(memberOpts.filter((o) => !isBudget(o) && !isDeclined(o)), (o) => o.userId)) {
+    units.push({ members: [userId], opts: new Map([[userId, opts]]), cost: 0, order: units.length });
   }
+  if (budgetOpts.length > 0 && !budgetOpts.some(isDeclined)) {
+    units.push({ members: budgetOpts.map((o) => o.userId), opts: new Map(budgetOpts.map((o) => [o.userId, [o]])), cost: 1, budget: true });
+  }
+  // Smallest change first: the options arrive sorted by cost, so rank a unit by its first option's position.
+  const rank = (u) => Math.max(...u.members.map((id) => options.findIndex((o) => o.userId === id && (u.budget ? isBudget(o) : !isBudget(o)))));
+  units.sort((a, b) => rank(a) - rank(b));
 
-  // Every budget option covers the WHOLE shortfall, so at most one member is asked
-  // for money: later members get a non-budget ask or are skipped.
-  const chosen = [];
-  let budgetAsked = false;
-  for (const [userId, opts] of perMember) {
-    if (chosen.length >= MAX_NEGOTIATING_MEMBERS) break;
-    const usable = budgetAsked ? opts.filter((o) => !isBudget(o)) : opts;
-    if (usable.length === 0) continue;
-    if (isBudget(usable[0])) budgetAsked = true;
-    chosen.push([userId, usable]);
+  const chosen = []; // [userId, [option, alternative?]]
+  const asked = new Set();
+  for (const u of units) {
+    if (u.members.some((id) => asked.has(id)) || asked.size + u.members.length > MAX_NEGOTIATING_MEMBERS) continue;
+    for (const id of u.members) {
+      asked.add(id);
+      // Alternatives are never budget asks: those only make sense as a whole group.
+      const rest = memberOpts.filter((o) => o.userId === id && !isBudget(o) && !isDeclined(o) && !u.opts.get(id).includes(o));
+      chosen.push([id, [...u.opts.get(id), ...rest].slice(0, 2)]);
+    }
   }
   if (chosen.length === 0) return { outcome: declined.length > 0 ? 'exhausted' : 'none' };
 

@@ -46,7 +46,7 @@ const PEOPLE = [
     preferences: { text: 'Good wifi, and somewhere easy to relax.', features: ['wifi'] },
   },
   {
-    name: 'Arjun', role: 'member', budgetCents: 4500, commitment: 'hold',
+    name: 'Arjun', role: 'member', budgetCents: 5500, commitment: 'hold',
     comfort: { text: "It has to be a budget stay. I'm saving every rupee.", features: ['budget'] },
     preferences: { text: 'A kitchen so we can cook a few meals.', features: ['kitchen'] },
   },
@@ -60,7 +60,7 @@ const PEOPLE = [
     },
   },
   {
-    name: 'Kabir', role: 'member', budgetCents: 5500, commitment: 'need_time',
+    name: 'Kabir', role: 'member', budgetCents: 6000, commitment: 'need_time',
     comfort: { text: 'It needs a party scene. This is a friends trip!', features: ['party'] },
     preferences: { text: 'Wifi for uploading music, and air conditioning.', features: ['wifi', 'air conditioning'] },
   },
@@ -187,6 +187,10 @@ Expected outcome when Riya presses "Plan" (log in as Riya, Meera and Kabir to fo
      It unlocks ${r.stay.name} (${r.wishes.join(' + ')}, your wishes), your share ${usd(r.shareCents)}.
   3. Meera accepts -> Pact re-plans -> ${r.stay.name} is proposed; everyone votes.
   4. Riya, Arjun and Meera chose "Hold now"; Kabir chose "Need more time".
+  5. Once they hold, Riya/Arjun/Meera see "A friend needs a $53 cover — offer to help?" (no name).
+     Say Arjun offers: only Kabir sees "Arjun offered to cover your $53", picks 1-3 installments and accepts
+     (or declines, which reopens it). Then Arjun sees "You're covering Kabir" and approves the hold.
+     Both track repayment privately; everyone else only sees "Everyone's share is covered ✓".
   Nobody else sees Meera's question, her budget, or that she was asked.`);
   } catch (err) {
     console.error('Demo failed:', err.message);

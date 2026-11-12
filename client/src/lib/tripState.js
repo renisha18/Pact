@@ -20,6 +20,9 @@ export const ACTION_TAB = {
   commit: 'commit',
   payment_failed: 'commit',
   cover: 'commit',
+  cover_offered: 'commit',
+  cover_approve: 'commit',
+  repayment_due: 'commit',
 };
 
 export function activeMembers(members) {

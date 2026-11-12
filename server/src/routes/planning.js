@@ -8,8 +8,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
-import { filterListings, capsForListing } from '../lib/filterListings.js';
-import { fairSplit } from '../lib/fairSplit.js';
+import { filterListings, splitFor } from '../lib/filterListings.js';
 import { counterfactual } from '../lib/counterfactual.js';
 import {
   prepareNegotiations, saveNegotiations, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
@@ -458,8 +457,8 @@ planningRouter.post('/:id/votes', requireTripMember, validateBody(voteSchema), a
     }));
 
     for (const p of ranked) {
-      // Caps for THIS listing: an override's accepted share where one exists, else the original budget.
-      const split = fairSplit(p.total_cents, capsForListing(payers, p.listing_id));
+      // Equal shares; affordable against each budget for THIS listing (an override's accepted share where one exists).
+      const split = splitFor(p.total_cents, payers, p.listing_id);
       const consented = payers.flatMap((m) => m.overrides
         .filter((o) => o.listingId === p.listing_id && Number.isInteger(o.maxShareCents))
         .map((o) => ({ userId: m.userId, maxShareCents: o.maxShareCents })));

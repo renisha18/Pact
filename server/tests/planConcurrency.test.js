@@ -72,9 +72,9 @@ beforeAll(async () => {
       ('Big Villa', 'Ubud', 40000, 4, 'private_rooms', '{pool}');
   `);
   for (const trip of [1, 2, 3, 4]) for (const u of [A, B]) expect((await submit(trip, u, 100)).status).toBe(200);
-  // Trip 5: caps $70 total -> only Shared Loft ($60) is affordable, and B would rather avoid shared rooms.
-  expect((await submit(5, A, 35)).status).toBe(200);
-  expect((await submit(5, B, 35, 'PREF-SHARED own room please')).status).toBe(200);
+  // Trip 5: budgets $30 each -> only Shared Loft ($60 -> $30 each) is affordable, and B would rather avoid shared rooms.
+  expect((await submit(5, A, 30)).status).toBe(200);
+  expect((await submit(5, B, 30, 'PREF-SHARED own room please')).status).toBe(200);
 });
 
 beforeEach(() => {
@@ -196,7 +196,7 @@ describe('negotiation consent under concurrency', () => {
   });
 
   it('editing input then accepting -> 409', async () => {
-    expect((await submit(5, B, 35, 'PREF-SHARED own room please')).status).toBe(200);
+    expect((await submit(5, B, 30, 'PREF-SHARED own room please')).status).toBe(200);
     expect((await respond(5, ask.id, B, 'accept')).status).toBe(409);
     const { rows: ov } = await pg.query('SELECT 1 FROM consent_overrides WHERE trip_id = 5 AND user_id = $1', [B]);
     expect(ov).toEqual([]);

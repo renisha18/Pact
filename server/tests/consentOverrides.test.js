@@ -30,10 +30,10 @@ const prefs = (avoid) => ({ hardRequirements: [], avoidRoomTypes: avoid, softPre
 describe('filterListings: overrides apply only to their own listing', () => {
   it('a budget override unlocks its listing and no other', () => {
     const members = [
-      { userId: 1, capCents: 5000, overrides: [{ listingId: 1, kind: 'budget', maxShareCents: 6800, roomType: null }] },
-      { userId: 2, capCents: 5000 },
+      { userId: 1, capCents: 5000, overrides: [{ listingId: 1, kind: 'budget', maxShareCents: 5900, roomType: null }] },
+      { userId: 2, capCents: 6000 },
     ];
-    // Without the override neither fits; with a global +$20 both would.
+    // Equal shares: 5900 at listing 1, 6000 at listing 2. Member 1 only accepted 5900, and only for listing 1.
     expect(filterListings([L(1, 11800), L(2, 12000)], members, 1, 2).map((c) => c.listingId)).toEqual([1]);
   });
 
@@ -56,7 +56,7 @@ describe('filterListings: overrides apply only to their own listing', () => {
         overrides: [{ listingId: 1, kind: 'room_type', maxShareCents: 1000, roomType: 'shared_rooms' }] },
       { userId: 2, capCents: 4000 },
     ];
-    expect(filterListings([L(1, 6000, 'shared_rooms')], members, 1, 2)).toEqual([]); // 1000 + 4000 < 6000
+    expect(filterListings([L(1, 6000, 'shared_rooms')], members, 1, 2)).toEqual([]); // equal share 3000 > the 1000 they accepted
   });
 });
 
@@ -76,8 +76,8 @@ const overrides = async (trip) => (await pg.query(
 )).rows;
 
 beforeAll(async () => {
-  // Caps $50 + $50. Villa X $118 (shortfall $18 -> ask $20, A's share $68). Villa Y $120:
-  // a plain +$20 budget raise WOULD make Y affordable; a listing-scoped override must not.
+  // Budgets A $50, B $60. Villa X $118 -> $59 each (A is $9 short, so A is asked for exactly $9).
+  // Villa Y $120 -> $60 each: a plain +$9 raise would NOT cover it, and a listing-scoped override must not either.
   await pg.exec(`
     INSERT INTO users (name, email) VALUES ('Riya', 'r@pact.demo'), ('Arjun', 'a@pact.demo');
     INSERT INTO groups (name, invite_token, personality) VALUES ('G', 'tok', 'chill');
@@ -92,7 +92,7 @@ beforeAll(async () => {
   for (const trip of [1, 2, 3]) {
     for (const u of [A, B]) {
       const r = await request(app).put(`/api/trips/${trip}/private-input`).set('Cookie', as(u))
-        .send({ maxBudgetUsd: 50, preferencesText: 'anything', comfortText: '', commitmentType: 'hold' });
+        .send({ maxBudgetUsd: u === A ? 50 : 60, preferencesText: 'anything', comfortText: '', commitmentType: 'hold' });
       expect(r.status).toBe(200);
     }
   }
@@ -102,7 +102,7 @@ beforeAll(async () => {
 async function acceptRaise(trip) {
   expect((await plan(trip)).body.proposals).toEqual([]);
   const ask = (await myAsk(trip, A)).body;
-  expect(ask).toMatchObject({ kind: 'raiseBudget', raiseByCents: 2000, newShareCents: 6800, stay: { name: 'Villa X' } });
+  expect(ask).toMatchObject({ kind: 'raiseBudget', raiseByCents: 900, newShareCents: 5900, stay: { name: 'Villa X' } });
   return respond(trip, ask.id, A, 'accept');
 }
 
@@ -113,7 +113,7 @@ describe('consent overrides', () => {
     expect(res.body.plan.proposals.map((p) => p.listingName)).toEqual(['Villa X']); // not Villa Y
     const { rows: [pi] } = await pg.query('SELECT max_budget_cents FROM private_inputs WHERE trip_id = 1 AND user_id = $1', [A]);
     expect(pi.max_budget_cents).toBe(5000); // private input untouched
-    expect(await overrides(1)).toEqual([{ user_id: A, listing_id: 1, kind: 'budget', accepted_max_share_cents: 6800, status: 'active' }]);
+    expect(await overrides(1)).toEqual([{ user_id: A, listing_id: 1, kind: 'budget', accepted_max_share_cents: 5900, status: 'active' }]);
   });
 
   it('a member is never charged above the accepted share; other stays\' consent expires', async () => {
@@ -128,14 +128,14 @@ describe('consent overrides', () => {
     const res = await vote(1, B, proposals[0].id);
     expect(res.body.status).toBe('committing');
     const { rows: shares } = await pg.query('SELECT user_id, amount_cents FROM shares WHERE trip_id = 1 ORDER BY user_id');
-    expect(shares).toEqual([{ user_id: A, amount_cents: 6800 }, { user_id: B, amount_cents: 5000 }]);
+    expect(shares).toEqual([{ user_id: A, amount_cents: 5900 }, { user_id: B, amount_cents: 5900 }]);
     expect((await overrides(1)).map((o) => [o.listing_id, o.status])).toEqual([[1, 'active'], [2, 'expired']]);
   });
 
-  it('a changed split that would exceed the accepted share -> no shares, re-check, fresh consent needed', async () => {
+  it('an equal share above the accepted share -> no shares, re-check, fresh consent needed', async () => {
     expect((await acceptRaise(2)).status).toBe(200);
-    // B's budget drops after A consented: X would now need more than A's accepted $68.
-    await pg.query('UPDATE private_inputs SET max_budget_cents = 4000 WHERE trip_id = 2 AND user_id = $1', [B]);
+    // The equal share no longer fits what A consented to ($59): the stored consent is below it.
+    await pg.query('UPDATE consent_overrides SET accepted_max_share_cents = 5000 WHERE trip_id = 2');
     const { proposals } = (await request(app).get('/api/trips/2/proposals').set('Cookie', as(B))).body;
     await vote(2, A, proposals[0].id);
     const res = await vote(2, B, proposals[0].id);
@@ -145,7 +145,7 @@ describe('consent overrides', () => {
     expect(t).toEqual({ status: 'planning', chosen_listing_id: null });
     expect((await overrides(2)).map((o) => o.status)).toEqual(['expired']);
     // Message is public and generic: no names, no amounts.
-    expect(JSON.stringify(res.body)).not.toMatch(/Riya|Arjun|68|\$/);
+    expect(JSON.stringify(res.body)).not.toMatch(/Riya|Arjun|59|\$/);
   });
 
   it('editing private input expires that member\'s overrides', async () => {

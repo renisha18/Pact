@@ -2,21 +2,19 @@
 // Runs only when filterListings finds nothing, and tries ONE change at a time:
 //   a. group:  fewer nights
 //   b. member: drop one 'preferred' avoided room type
-//   c. member: raise their budget cap (rounded up to $5)
+//   c. members: raise their budget to the listing's equal share, for a listing that fails
+//      ONLY on budget and needs at most 2 members to raise. Each is asked for exactly their own amount.
 // It never touches 'strict' avoids or hard requirements (both come from comfort_text).
 // Member-scoped options carry private numbers: route each one ONLY to its userId.
-import { filterListings, avoidType, capsForListing } from './filterListings.js';
-import { fairSplit } from './fairSplit.js';
+import { filterListings, avoidType, splitFor, capForListing } from './filterListings.js';
 
-const ROUND_CENTS = 500;
-const roundUp = (cents) => Math.ceil(cents / ROUND_CENTS) * ROUND_CENTS;
+export const MAX_BUDGET_RAISERS = 2;
 
 const EMPTY = { hardRequirements: [], avoidRoomTypes: [], softPreferences: [] };
 const prefsOf = (m) => ({ ...EMPTY, ...(m.extracted ?? {}) });
 
 function shareFor(totalCents, members, userId, listingId) {
-  const split = fairSplit(totalCents, capsForListing(members, listingId));
-  return split.shares.find((s) => s.userId === userId).amountCents;
+  return splitFor(totalCents, members, listingId).shares.find((s) => s.userId === userId).amountCents;
 }
 
 function memberOption(members, userId, change, cost, candidates, listingsById, top = candidates[0]) {
@@ -81,26 +79,41 @@ export function counterfactual(listings, members, nights, groupSize) {
         options.push(memberOption(relaxed, m.userId, { kind: 'allowRoomType', roomType: avoidType(entry) }, 0.25, found, listingsById));
       }
     }
+  }
 
-    // c. Raise this member's cap. fairSplit is feasible iff sum(caps) >= total, so the
-    // minimum raise for a listing is its shortfall; the cheapest eligible listing needs the least.
-    const maxTotal = listings.reduce((mx, l) => Math.max(mx, l.price_per_night_cents * nights), 0);
-    const unbounded = members.map((x, j) => (j !== i ? x : { ...x, capCents: x.capCents + maxTotal }));
-    const eligible = filterListings(listings, unbounded, nights, groupSize);
-    if (eligible.length === 0) continue;
-    // Caps are per listing (consent overrides), so the shortfall is too.
-    const shortfall = (c) => c.totalCents - capsForListing(members, c.listingId).reduce((s, x) => s + x.capCents, 0);
-    const raise = roundUp(Math.min(...eligible.map(shortfall)));
-    const raised = members.map((x, j) => (j !== i ? x : { ...x, capCents: x.capCents + raise }));
-    const found = filterListings(listings, raised, nights, groupSize);
-    if (found.length > 0) {
-      options.push(memberOption(
-        raised, m.userId, { kind: 'raiseBudget', byCents: raise },
-        m.capCents > 0 ? raise / m.capCents : Infinity, found, listingsById,
-        // The stay this raise was sized for (smallest shortfall, then cheapest): the override targets it.
-        found.reduce((lo, c) => (shortfall(c) < shortfall(lo) ||
-          (shortfall(c) === shortfall(lo) && c.totalCents < lo.totalCents) ? c : lo)),
-      ));
+  // c. Budget: stays that fail only on budget (everything else passes when budgets are unlimited).
+  // Each member below the equal share would need (equalShare - budget). One stay's raisers are asked
+  // together, each for exactly their own amount; their accepted share is that stay's equal share.
+  const unlimited = members.map((x) => ({ ...x, capCents: Number.MAX_SAFE_INTEGER }));
+  const units = [];
+  for (const c of filterListings(listings, unlimited, nights, groupSize)) {
+    const { shares } = splitFor(c.totalCents, members, c.listingId);
+    const raisers = shares
+      .map((sh) => ({ sh, cap: capForListing(members.find((m) => m.userId === sh.userId), c.listingId) }))
+      .filter(({ sh, cap }) => sh.amountCents > cap);
+    if (raisers.length >= 1 && raisers.length <= MAX_BUDGET_RAISERS) units.push({ c, raisers });
+  }
+  units.sort((a, b) =>
+    a.raisers.length - b.raisers.length ||
+    a.raisers.reduce((t, r) => t + r.sh.amountCents - r.cap, 0) - b.raisers.reduce((t, r) => t + r.sh.amountCents - r.cap, 0) ||
+    a.c.totalCents - b.c.totalCents || a.c.listingId - b.c.listingId);
+  const best = units[0];
+  if (best) {
+    const listing = listingsById.get(best.c.listingId);
+    const features = new Set([...(listing.amenities ?? []), ...(listing.vibe_tags ?? [])]);
+    for (const { sh, cap } of best.raisers) {
+      const own = prefsOf(members.find((m) => m.userId === sh.userId));
+      options.push({
+        scope: 'member',
+        userId: sh.userId,
+        change: { kind: 'raiseBudget', byCents: sh.amountCents - cap },
+        unlockedListingIds: [best.c.listingId],
+        listingId: best.c.listingId,
+        newShareCents: sh.amountCents,
+        matchesOwnWishes: own.softPreferences.filter((w) => features.has(w)),
+        unit: `budget:${best.c.listingId}`, // every raiser of this stay must accept
+        cost: cap > 0 ? (sh.amountCents - cap) / cap : Infinity,
+      });
     }
   }
 

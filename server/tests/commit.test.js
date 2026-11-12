@@ -131,18 +131,17 @@ describe('hold + confirm', () => {
 });
 
 describe('cover', () => {
-  it("assigns a need_time share without revealing whose", async () => {
+  it('shows an amount without revealing whose, and needs the member\'s agreement before any hold', async () => {
     const t = await seedTrip({ cType: 'need_time' });
     await addPayment(t, A, { auth: 'AUTH-CA' });
-    pp.createAuthorizeOrder.mockResolvedValue({ id: 'ORD-COVER' });
     const avail = await request(app).get(`/api/trips/${t}/cover/available`).set('Cookie', as(A));
     expect(avail.body).toEqual({ available: true, amountCents: SHARE });
     const notYou = await request(app).get(`/api/trips/${t}/cover/available`).set('Cookie', as(B)); // not committed
     expect(notYou.body).toEqual({ available: false, amountCents: null });
+    // No offer accepted yet: no PayPal order can be created.
     const res = await request(app).post(`/api/trips/${t}/cover`).set('Cookie', as(A));
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({ orderId: 'ORD-COVER', amountCents: SHARE, coveringFor: 'a friend' });
-    expect(JSON.stringify(res.body)).not.toMatch(/Cleo|"3"|userId/);
+    expect(res.status).toBe(409);
+    expect(pp.createAuthorizeOrder).not.toHaveBeenCalled();
   });
 });
 

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PayPalScriptProvider, PayPalButtons } from '@paypal/react-paypal-js';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
-import { formatUsd } from '../lib/format.js';
+import { formatDate, formatUsd } from '../lib/format.js';
 import { btn, card, ErrorNote, Loading } from './ui.jsx';
 import { PixelLock, PactAvatar } from './Planning.jsx';
 
@@ -107,7 +107,9 @@ function ReadinessBar({ readiness }) {
           <span key={i} className={`h-3 flex-1 ${i < secured ? 'bg-coral' : 'bg-mint-dark'}`} />
         ))}
       </div>
-      <p className="mt-3 text-sm text-pine-soft">Nobody has fronted the money.</p>
+      <p className="mt-3 text-sm text-pine-soft">
+        {readiness.allSecured ? 'Everyone’s share is covered ✓' : 'Nobody has fronted the money.'}
+      </p>
     </section>
   );
 }
@@ -172,7 +174,7 @@ function MyCommitment({ tripId, tripStatus, me, onChanged }) {
 
       {needsMoney && me.commitmentType === 'need_time' && (
         <p className="mt-4 rounded-xl bg-mint px-3 py-2 text-sm">
-          A friend will cover you. Pact is waiting for a volunteer, and nobody will see it’s you.
+          Pact is looking for a friend to cover you. They’ll offer privately and you choose whether to accept. Nobody else will see it’s you.
         </p>
       )}
 
@@ -205,34 +207,156 @@ function MyCommitment({ tripId, tripStatus, me, onChanged }) {
   );
 }
 
-// --- Cover a friend
+// --- Cover a friend: a private two-person match (names only ever shown to the two people involved)
 
 function CoverFriend({ tripId, onChanged }) {
   const { data } = useApi(`/api/trips/${tripId}/cover/available`);
-  const [open, setOpen] = useState(false);
-  if (!data?.available) return null;
+  const mine = useApi(`/api/trips/${tripId}/cover/mine`);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function offer() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/trips/${tripId}/cover/offer`, { method: 'POST' });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  if (mine.loading && !mine.data) return null;
+  const open = mine.data;
+  if (!open && !data?.available) return null;
   return (
     <section className={card} aria-labelledby="cover-title">
-      <h2 id="cover-title" className="font-bold">A friend needs more time</h2>
-      <p className="mt-1 text-sm text-pine-soft">
-        Hold {formatUsd(data.amountCents)} for them. Pact never says who, and they can pay you back later.
-      </p>
-      {open ? (
+      {open?.status === 'accepted' ? (
         <>
-          <p className="mt-4 text-sm text-pine-soft">
-            PayPal will say “Pay Now” — for a hold, your money is only reserved until the group books. You can be released anytime before booking.
+          <h2 id="cover-title" className="font-bold">You’re covering {open.coveredName} — {formatUsd(open.amountCents)}</h2>
+          <p className="mt-1 text-sm text-pine-soft">
+            Approve the PayPal hold to finish. {open.coveredName} will repay you in installments after the trip.
           </p>
-        <PayPalPay intent="authorize"
-          createPath={`/api/trips/${tripId}/cover`}
-          confirmPath={`/api/trips/${tripId}/cover/confirm`}
-          onDone={onChanged} />
+          <PayPalPay intent="authorize"
+            createPath={`/api/trips/${tripId}/cover`}
+            confirmPath={`/api/trips/${tripId}/cover/confirm`}
+            onDone={onChanged} />
+        </>
+      ) : open ? (
+        <>
+          <h2 id="cover-title" className="font-bold">Offer sent</h2>
+          <p className="mt-1 text-sm text-pine-soft">Waiting for them to respond. You’ll see their name once they accept.</p>
         </>
       ) : (
-        <button type="button" onClick={() => setOpen(true)} className={`${btn.base} ${btn.coral} ${btn.small} mt-4`}>
-          Cover a friend · {formatUsd(data.amountCents)}
-        </button>
+        <>
+          <h2 id="cover-title" className="font-bold">A friend needs a {formatUsd(data.amountCents)} cover — offer to help?</h2>
+          <p className="mt-1 text-sm text-pine-soft">
+            They’ll be asked privately and can accept or decline. If they accept, they repay you in installments after the trip.
+          </p>
+          <button type="button" disabled={busy} onClick={offer} className={`${btn.base} ${btn.coral} ${btn.small} mt-4`}>
+            {busy ? 'Sending…' : 'Offer to help'}
+          </button>
+          <div className="mt-2"><ErrorNote>{error}</ErrorNote></div>
+        </>
       )}
     </section>
+  );
+}
+
+/** For the member being offered a cover (PRIVATE): accept with a repayment plan, or decline. */
+function OfferForMe({ tripId, onChanged }) {
+  const { data } = useApi(`/api/trips/${tripId}/cover/offer`);
+  const [n, setN] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (!data) return null;
+
+  async function respond(body) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/trips/${tripId}/cover/offers/${data.id}`, { method: 'POST', body });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  const plan = data.plans[n];
+  return (
+    <section className={`${card} ring-2 ring-coral`} aria-labelledby="offer-title">
+      <h2 id="offer-title" className="font-bold">
+        {data.covererName} offered to cover your {formatUsd(data.amountCents)}.
+      </h2>
+      <p className="mt-1 text-sm text-pine-soft">You’ll repay {data.covererName} in installments after the trip. Only the two of you see this.</p>
+      <fieldset className="mt-4">
+        <legend className="text-sm font-medium">How many installments?</legend>
+        <div className="mt-2 flex gap-2">
+          {[1, 2, 3].map((k) => (
+            <label key={k} className="cursor-pointer">
+              <input type="radio" name="installments" checked={n === k} onChange={() => setN(k)} className="peer sr-only" />
+              <span className="block rounded-full bg-mint px-4 py-1.5 text-sm ring-1 ring-mint-dark peer-checked:bg-white peer-checked:ring-2 peer-checked:ring-coral">{k}</span>
+            </label>
+          ))}
+        </div>
+        <ul className="mt-3 space-y-1 text-sm">
+          {plan.map((i) => <li key={i.n}>{formatUsd(i.amountCents)} · due {formatDate(i.dueDate, { month: 'short', day: 'numeric', year: 'numeric' })}</li>)}
+        </ul>
+      </fieldset>
+      <div className="mt-4 flex gap-2">
+        <button type="button" disabled={busy} onClick={() => respond({ response: 'accept', installments: n })} className={`${btn.base} ${btn.coral} ${btn.small}`}>Accept</button>
+        <button type="button" disabled={busy} onClick={() => respond({ response: 'decline' })} className={`${btn.base} ${btn.cloud} ${btn.small}`}>Decline</button>
+      </div>
+      <div className="mt-2"><ErrorNote>{error}</ErrorNote></div>
+    </section>
+  );
+}
+
+/** Repayment tracker, shown only to the coverer and the covered member. */
+function RepaymentTracker({ tripId, onChanged }) {
+  const { data } = useApi(`/api/trips/${tripId}/cover/tracker`);
+  const [error, setError] = useState(null);
+  if (!data?.length) return null;
+
+  async function received(id) {
+    setError(null);
+    try {
+      await api(`/api/trips/${tripId}/cover/installments/${id}/received`, { method: 'POST' });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <>
+      {data.map((t) => (
+        <section key={`${t.role}-${t.counterpartName}`} className={card} aria-labelledby="repay-title">
+          <h2 id="repay-title" className="flex items-center gap-2 font-bold"><PixelLock /> Repayment</h2>
+          <p className="mt-1 text-sm text-pine-soft">
+            {t.role === 'coverer' ? `You’re covering ${t.counterpartName}` : `${t.counterpartName} covered your share`} · {formatUsd(t.amountCents)}
+          </p>
+          <p className="mt-3 text-lg font-bold">Repaid {formatUsd(t.repaidCents)} of {formatUsd(t.amountCents)}</p>
+          <p className="text-sm text-pine-soft">
+            {t.nextDueDate ? `Next due ${formatDate(t.nextDueDate, { month: 'short', day: 'numeric', year: 'numeric' })}` : 'All repaid ✓'}
+          </p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {t.installments.map((i) => (
+              <li key={i.id} className="flex flex-wrap items-center gap-2">
+                <span>{formatUsd(i.amountCents)} · {formatDate(i.dueDate, { month: 'short', day: 'numeric' })}</span>
+                {i.paid ? <span className="rounded-full bg-water/30 px-2 py-0.5 text-xs">repaid ✓</span>
+                  : t.role === 'coverer' && (
+                    <button type="button" onClick={() => received(i.id)} className={`${btn.base} ${btn.cloud} ${btn.small}`}>Mark received</button>
+                  )}
+              </li>
+            ))}
+          </ul>
+          <ErrorNote>{error}</ErrorNote>
+        </section>
+      ))}
+    </>
   );
 }
 
@@ -293,7 +417,9 @@ function CommitPanelInner({ trip, isOrganizer, refresh, onNotice }) {
 
       <div className="grid gap-4 md:grid-cols-2">
         <MyCommitment tripId={tripId} tripStatus={trip.status} me={me.data} onChanged={refresh} />
+        {open && <OfferForMe tripId={tripId} onChanged={refresh} />}
         {open && <CoverFriend tripId={tripId} onChanged={refresh} />}
+        <RepaymentTracker tripId={tripId} onChanged={refresh} />
       </div>
 
       {isOrganizer && open && (

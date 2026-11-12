@@ -57,7 +57,7 @@ describe('demo scenario', () => {
     const ask = (await myAsk(demo.tripId, MEERA)).body;
     expect(ask).toMatchObject({
       kind: 'allowRoomType', roomType: 'shared_rooms', stay: { name: 'Kayu Aya Shared House' },
-      newShareCents: 5500,
+      newShareCents: 5250,
     });
     expect(ask.matchesOwnWishes).toContain('pool');
     for (const u of [RIYA, ARJUN, KABIR]) expect((await myAsk(demo.tripId, u)).status).toBe(404);
@@ -65,7 +65,7 @@ describe('demo scenario', () => {
     expect(rows[0].n).toBe(1);
   });
 
-  it('Meera accepts -> the pool stay is proposed, everyone can vote, nobody is charged above their cap', async () => {
+  it('Meera accepts -> the pool stay is proposed, everyone can vote, everyone pays the same share, within every budget', async () => {
     const ask = (await myAsk(demo.tripId, MEERA)).body;
     const res = await request(app).post(`/api/trips/${demo.tripId}/negotiations/${ask.id}`)
       .set('Cookie', as(MEERA)).send({ response: 'accept' });
@@ -79,8 +79,8 @@ describe('demo scenario', () => {
     }
     const { rows } = await pg.query('SELECT user_id, amount_cents FROM shares ORDER BY user_id');
     expect(rows).toEqual([
-      { user_id: RIYA, amount_cents: 5500 }, { user_id: ARJUN, amount_cents: 4500 },
-      { user_id: MEERA, amount_cents: 5500 }, { user_id: KABIR, amount_cents: 5500 },
+      { user_id: RIYA, amount_cents: 5250 }, { user_id: ARJUN, amount_cents: 5250 },
+      { user_id: MEERA, amount_cents: 5250 }, { user_id: KABIR, amount_cents: 5250 },
     ]);
   });
 });

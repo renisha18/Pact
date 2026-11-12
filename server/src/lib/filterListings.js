@@ -1,7 +1,7 @@
 // Pure candidate filter: no AI, no DB. All amounts are integer cents.
 // The facts it returns are safe to show the whole group or hand to the AI:
 // they never contain budget numbers, names or member text.
-import { fairSplit } from './fairSplit.js';
+import { equalSplit } from './equalSplit.js';
 
 const AMENITY_PHRASES = {
   pool: 'has a pool',
@@ -43,9 +43,17 @@ export function capForListing(m, listingId) {
   return cap;
 }
 
-/** fairSplit caps for one listing, overrides applied. */
-export const capsForListing = (members, listingId) =>
-  members.map((m) => ({ userId: m.userId, capCents: capForListing(m, listingId) }));
+/**
+ * Equal split of a listing's total, and whether it is affordable: every member's equal share
+ * must be <= their budget for that listing (their private budget, or the share they accepted
+ * through an active consent override for it).
+ * @returns {{feasible: boolean, shares: Array<{userId:number, amountCents:number}>}}
+ */
+export function splitFor(totalCents, members, listingId) {
+  const { shares } = equalSplit(totalCents, members);
+  const feasible = shares.every((s) => s.amountCents <= capForListing(members.find((m) => m.userId === s.userId), listingId));
+  return { feasible, shares };
+}
 
 /** Room types this member avoids AT this listing (preferred avoids lifted by an override for it). */
 function avoidedAt(m, p, listingId) {
@@ -85,7 +93,7 @@ export function filterListings(listings, members, nights, groupSize) {
     if ([...required].some((r) => !features.has(r))) continue;
 
     const totalCents = listing.price_per_night_cents * nights;
-    if (!fairSplit(totalCents, capsForListing(members, listing.id)).feasible) continue;
+    if (!splitFor(totalCents, members, listing.id).feasible) continue;
 
     const softMatchCount = prefs.reduce(
       (sum, p) => sum + p.softPreferences.filter((s) => features.has(s)).length,
