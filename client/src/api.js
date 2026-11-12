@@ -1,4 +1,5 @@
-const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:4000').replace(/\/+$/, '');
+// Empty VITE_API_URL (production, same origin) means relative /api URLs. Unset in dev falls back to the local server.
+const API_URL = (import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:4000' : '')).replace(/\/+$/, '');
 
 export const AI_UNAVAILABLE_MESSAGE = 'Pact is catching its breath — try again in a minute';
 

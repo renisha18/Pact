@@ -10,6 +10,14 @@ describe('GET /health', () => {
   });
 });
 
+describe('GET /api/health', () => {
+  it('returns {ok:true}', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+});
+
 describe('unknown API routes', () => {
   it('return JSON 404', async () => {
     const res = await request(app).get('/api/nope/at/all');
