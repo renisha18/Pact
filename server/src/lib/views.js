@@ -118,6 +118,8 @@ export function privateInputSelf(row) {
     maxBudgetCents: row.max_budget_cents,
     preferencesText: row.preferences_text,
     comfortText: row.comfort_text,
+    mustHaveChips: row.must_have_chips ?? [],
+    niceToHaveChips: row.nice_to_have_chips ?? [],
     commitmentType: row.commitment_type,
     roastLevel: row.roast_level,
     updatedAt: row.updated_at,

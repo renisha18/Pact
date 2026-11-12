@@ -11,11 +11,13 @@ export async function actionsFor(userId) {
             (t.status IN ('collecting', 'planning')
                AND NOT EXISTS (SELECT 1 FROM private_inputs pi WHERE pi.trip_id = t.id AND pi.user_id = tm.user_id)) AS needs_details,
             (t.status IN ('collecting', 'planning') AND t.dates_status <> 'chosen'
-               AND NOT EXISTS (SELECT 1 FROM member_availability ma WHERE ma.trip_id = t.id AND ma.user_id = tm.user_id)) AS needs_days,
+               AND NOT EXISTS (SELECT 1 FROM availability_blocks ab WHERE ab.trip_id = t.id AND ab.user_id = tm.user_id)) AS needs_days,
             (t.status IN ('voting', 'committing') AND t.dates_status = 'chosen' AND t.window_start IS NOT NULL
-               AND EXISTS (SELECT 1 FROM member_availability ma WHERE ma.trip_id = t.id AND ma.user_id = tm.user_id)
-               AND (SELECT count(*) FROM member_availability ma WHERE ma.trip_id = t.id AND ma.user_id = tm.user_id
-                       AND ma.day BETWEEN t.start_date AND t.end_date) < t.nights + 1) AS dates_nudge,
+               AND EXISTS (SELECT 1 FROM availability_blocks ab WHERE ab.trip_id = t.id AND ab.user_id = tm.user_id)
+               AND EXISTS (SELECT 1 FROM generate_series(t.start_date, t.end_date, interval '1 day') g(d)
+                            WHERE NOT EXISTS (SELECT 1 FROM availability_blocks ab
+                                               WHERE ab.trip_id = t.id AND ab.user_id = tm.user_id
+                                                 AND g.d::date BETWEEN ab.start_day AND ab.end_day))) AS dates_nudge,
             EXISTS (SELECT 1 FROM negotiations n
                      WHERE n.trip_id = t.id AND n.user_id = tm.user_id AND n.status = 'pending'
                        AND n.plan_version = t.active_version) AS needs_negotiation,

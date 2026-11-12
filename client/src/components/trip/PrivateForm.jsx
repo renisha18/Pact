@@ -11,12 +11,40 @@ const COMMIT_OPTIONS = [
 ];
 const ROAST_LEVELS = ['off', 'mild', 'savage'];
 
+function ChipGroups({ title, hint, sections, selected, onToggle, name, text, onText, textLabel, disabled }) {
+  return (
+    <div>
+      <p className={label}>{title}</p>
+      <p className="-mt-1 mb-2 text-xs text-pine-soft">{hint}</p>
+      {sections.map((sec) => (
+        <fieldset key={sec.group} className="mt-3">
+          <legend className="text-xs font-bold tracking-wide text-pine-soft uppercase">{sec.group}</legend>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {sec.chips.map((c) => (
+              <button key={c.id} type="button" disabled={disabled} aria-pressed={selected.includes(c.id)} onClick={() => onToggle(c.id)}
+                className={`rounded-full px-3 py-1.5 text-sm font-medium ring-1 transition disabled:opacity-60 ${
+                  selected.includes(c.id) ? 'bg-pine text-cloud ring-pine' : 'bg-white ring-mint-dark hover:ring-coral'}`}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+      ))}
+      <label htmlFor={name} className="mt-4 block text-sm text-pine-soft">{textLabel}</label>
+      <input id={name} maxLength={200} value={text} onChange={onText} className={input} placeholder="Anything else?" />
+      <p className="mt-1 text-right text-xs text-pine-soft">{text.length}/200</p>
+    </div>
+  );
+}
+
 const centsToUsd = (cents) => (cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2));
 
 export default function PrivateForm({ tripId, editable, onSaved }) {
   const { data: existing, error: loadError, loading } = useApi(`/api/trips/${tripId}/private-input`);
+  const { data: vocab } = useApi('/api/vocabulary');
   const [form, setForm] = useState({
     budget: '', preferencesText: '', comfortText: '', commitmentType: '', roastLevel: 'mild',
+    mustHaveChips: [], niceToHaveChips: [],
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -30,10 +58,22 @@ export default function PrivateForm({ tripId, editable, onSaved }) {
         comfortText: existing.comfortText,
         commitmentType: existing.commitmentType ?? '',
         roastLevel: existing.roastLevel,
+        mustHaveChips: existing.mustHaveChips ?? [],
+        niceToHaveChips: existing.niceToHaveChips ?? [],
       });
       setSavedAt(existing.updatedAt);
     }
   }, [existing]);
+
+  const toggle = (key, id) => setForm((f) => {
+    const has = f[key].includes(id);
+    let next = has ? f[key].filter((x) => x !== id) : [...f[key], id];
+    // Own private room and "shared room is fine" contradict each other.
+    if (!has && id === 'private_room') next = next.filter((x) => x !== 'shared_ok');
+    if (!has && id === 'shared_ok') next = next.filter((x) => x !== 'private_room');
+    return { ...f, [key]: next };
+  });
+  const chipLabels = new Map([...(vocab?.mustHave ?? []), ...(vocab?.niceToHave ?? [])].flatMap((g) => g.chips.map((c) => [c.id, c.label])));
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -53,6 +93,8 @@ export default function PrivateForm({ tripId, editable, onSaved }) {
           comfortText: form.comfortText,
           commitmentType: form.commitmentType,
           roastLevel: form.roastLevel,
+          mustHaveChips: form.mustHaveChips.filter((id) => chipLabels.has(id)),
+          niceToHaveChips: form.niceToHaveChips.filter((id) => chipLabels.has(id)),
         },
       });
       setSavedAt(saved.updatedAt);
@@ -84,19 +126,16 @@ export default function PrivateForm({ tripId, editable, onSaved }) {
           </div>
         </div>
 
-        <div>
-          <label htmlFor="prefs" className={label}>Nice-to-haves — Pact may suggest trade-offs</label>
-          <textarea id="prefs" rows={3} maxLength={500} value={form.preferencesText} onChange={set('preferencesText')}
-            className={input} placeholder="A pool, near the surf, a kitchen for group dinners…" />
-          <p className="mt-1 text-right text-xs text-pine-soft">{form.preferencesText.length}/500</p>
-        </div>
-
-        <div>
-          <label htmlFor="comfort" className={label}>Must-haves — Pact will never ask you to change these</label>
-          <textarea id="comfort" rows={2} maxLength={300} value={form.comfortText} onChange={set('comfortText')}
-            className={input} placeholder="Dorms, long drives, loud party spots…" />
-          <p className="mt-1 text-right text-xs text-pine-soft">{form.comfortText.length}/300</p>
-        </div>
+        {vocab && (
+          <>
+            <ChipGroups title="Must-haves" hint="Pact never asks you to change these." sections={vocab.mustHave}
+              selected={form.mustHaveChips} onToggle={(id) => toggle('mustHaveChips', id)} disabled={!editable || saving}
+              name="comfort" text={form.comfortText} onText={set('comfortText')} textLabel="Anything else you must have?" />
+            <ChipGroups title="Nice-to-haves" hint="Pact may suggest trade-offs." sections={vocab.niceToHave}
+              selected={form.niceToHaveChips} onToggle={(id) => toggle('niceToHaveChips', id)} disabled={!editable || saving}
+              name="prefs" text={form.preferencesText} onText={set('preferencesText')} textLabel="Anything else you’d like?" />
+          </>
+        )}
 
         <fieldset>
           <legend className={label}>How you’ll commit</legend>
@@ -131,6 +170,15 @@ export default function PrivateForm({ tripId, editable, onSaved }) {
           <p className="mt-1 text-xs text-pine-soft">How cheeky the agent can be with you.</p>
         </fieldset>
       </fieldset>
+
+      {(form.mustHaveChips.length > 0 || form.niceToHaveChips.length > 0) && (
+        <div className="mt-6 rounded-xl bg-mint p-3 text-sm" aria-label="Review your choices">
+          <p className="font-bold">Your choices</p>
+          {[['Must-haves', form.mustHaveChips], ['Nice-to-haves', form.niceToHaveChips]].map(([t, ids]) => ids.length > 0 && (
+            <p key={t} className="mt-1"><span className="text-pine-soft">{t}:</span> {ids.map((id) => chipLabels.get(id)).filter(Boolean).join(', ')}</p>
+          ))}
+        </div>
+      )}
 
       <div className="mt-6 space-y-3">
         <ErrorNote>{error}</ErrorNote>

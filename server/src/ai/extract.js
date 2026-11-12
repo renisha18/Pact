@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { query } from '../db.js';
 import { generateJson, aiMode } from './llm.js';
+import { mergeChips } from '../lib/chips.js';
 
 const EXTRACTION_VERSION = 3;
 const MAX_TAGS = 20;
@@ -127,7 +128,7 @@ export async function extractPreferences(privateInput, db = { query }) {
 
   // Re-read so we compare against the stored updated_at at full precision.
   const { rows } = await db.query(
-    `SELECT preferences_text, comfort_text, extracted_json, updated_at::text AS source_version
+    `SELECT preferences_text, comfort_text, must_have_chips, nice_to_have_chips, extracted_json, updated_at::text AS source_version
        FROM private_inputs WHERE trip_id = $1 AND user_id = $2`,
     [tripId, userId],
   );
@@ -164,13 +165,15 @@ export async function extractPreferences(privateInput, db = { query }) {
     };
   }
 
-  const extracted = combine(fields.comfort, fields.preferences);
+  const fromText = combine(fields.comfort, fields.preferences);
+  // Chips are structured and uncached: merged in after the (cached) text extraction, no AI.
+  const extracted = mergeChips(fromText, row.must_have_chips, row.nice_to_have_chips);
   if (changed) {
     // Only save if the input hasn't changed while we were extracting.
     await db.query(
       `UPDATE private_inputs SET extracted_json = $3
         WHERE trip_id = $1 AND user_id = $2 AND updated_at::text = $4`,
-      [tripId, userId, JSON.stringify({ ...extracted, version: EXTRACTION_VERSION, mode, fields }), row.source_version],
+      [tripId, userId, JSON.stringify({ ...fromText, version: EXTRACTION_VERSION, mode, fields }), row.source_version],
     );
   }
   return extracted;

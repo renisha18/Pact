@@ -13,12 +13,12 @@ import { pool, withTransaction } from '../src/db.js';
 import { extractionCache } from '../src/ai/extract.js';
 import { filterListings } from '../src/lib/filterListings.js';
 import { counterfactual } from '../src/lib/counterfactual.js';
-import { windowDays } from '../src/lib/dates.js';
+import { mergeChips } from '../src/lib/chips.js';
 
 const TABLES = [
   'users', 'groups', 'group_members', 'listings', 'trips', 'trip_members',
   'private_inputs', 'proposals', 'votes', 'shares', 'covers', 'payments',
-  'event_log', 'group_taste', 'negotiations', 'consent_overrides', 'member_availability',
+  'event_log', 'group_taste', 'negotiations', 'consent_overrides', 'availability_blocks',
 ];
 
 const NIGHTS = 3;
@@ -36,12 +36,13 @@ const USERS = [
 
 // Words below are all in the listings vocabulary (listings.json). Comfort text = must-haves
 // (strict); preference text = nice-to-haves (negotiable). `features`/`avoidRoomTypes` are what
-// extraction produces for that text; they are stored as the cached extraction so the demo
+// extraction produces for that text; `mustChips`/`niceChips` are saved structured requirements (no AI); they are stored as the cached extraction so the demo
 // is identical whether the AI is live or in mock mode.
 const PEOPLE = [
   {
     name: 'Riya', role: 'organizer', budgetCents: 8500, commitment: 'hold',
-    comfort: { text: "I'm not comfortable in dorms. I need a room that isn't a mixed dorm.", avoidRoomTypes: ['mixed_dorm'] },
+    mustChips: ['no_mixed_dorms'],
+    comfort: { text: '' },
     preferences: { text: 'Good wifi, and somewhere easy to relax.', features: ['wifi'] },
   },
   {
@@ -52,9 +53,10 @@ const PEOPLE = [
   {
     name: 'Meera', role: 'member', budgetCents: 7000, commitment: 'hold',
     comfort: { text: '' },
+    niceChips: ['pool'],
     preferences: {
-      text: "I'd love a pool and a kitchen, but I'd rather not share a room.",
-      features: ['pool', 'kitchen'], avoidRoomTypes: ['shared_rooms'],
+      text: "A kitchen would be great, but I'd rather not share a room.",
+      features: ['kitchen'], avoidRoomTypes: ['shared_rooms'],
     },
   },
   {
@@ -64,6 +66,9 @@ const PEOPLE = [
   },
 ];
 
+/** What planning sees: cached text extraction merged with the member's chips. */
+const personExtracted = (p) => mergeChips(extractionCache(p), p.mustChips, p.niceChips);
+
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 /** Runs the real filter + counterfactual on the scenario and checks the story holds. */
@@ -71,7 +76,7 @@ function verifyScenario(listings, userIds) {
   const members = PEOPLE.map((p) => ({
     userId: userIds[p.name],
     capCents: p.budgetCents,
-    extracted: extractionCache(p),
+    extracted: personExtracted(p),
   }));
   const fits = filterListings(listings, members, NIGHTS, members.length);
   if (fits.length > 0) throw new Error('Demo scenario broken: a stay already fits everyone');
@@ -143,19 +148,24 @@ export async function resetDemo() {
     for (const p of PEOPLE) {
       await client.query(
         `INSERT INTO private_inputs
-           (trip_id, user_id, max_budget_cents, preferences_text, comfort_text, extracted_json)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [trip.id, userIds[p.name], p.budgetCents, p.preferences.text, p.comfort.text, JSON.stringify(extractionCache(p))],
+           (trip_id, user_id, max_budget_cents, preferences_text, comfort_text, extracted_json,
+            must_have_chips, nice_to_have_chips)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [trip.id, userIds[p.name], p.budgetCents, p.preferences.text, p.comfort.text, JSON.stringify(extractionCache(p)),
+          p.mustChips ?? [], p.niceChips ?? []],
       );
       await client.query(
         `INSERT INTO trip_members (trip_id, user_id, status, commitment_type)
          VALUES ($1, $2, 'submitted', $3)`,
         [trip.id, userIds[p.name], p.commitment],
       );
-      await client.query(
-        `INSERT INTO member_availability (trip_id, user_id, day) SELECT $1, $2, unnest($3::date[])`,
-        [trip.id, userIds[p.name], windowDays(isoDay(start), isoDay(start + WINDOW_DAYS * DAY_MS))],
-      );
+      // Two back-to-back 3-night blocks cover the whole window (one block per trip length).
+      for (const [from, to] of [[0, NIGHTS], [NIGHTS + 1, WINDOW_DAYS]]) {
+        await client.query(
+          'INSERT INTO availability_blocks (trip_id, user_id, start_day, end_day) VALUES ($1, $2, $3, $4)',
+          [trip.id, userIds[p.name], isoDay(start + from * DAY_MS), isoDay(start + to * DAY_MS)],
+        );
+      }
     }
 
     return { groupId: group.id, tripId: trip.id, nights: NIGHTS, ...outcome };

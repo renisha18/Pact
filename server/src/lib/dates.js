@@ -43,3 +43,10 @@ export function chooseDates(windowStart, windowEnd, nights, availability) {
     .map(({ startDate, endDate, availableCount, total }) => ({ startDate, endDate, availableCount, total }));
   return { kind: 'fallback', options };
 }
+
+/** Blocks [{startDate, endDate}] -> Set of every calendar day they cover (inclusive). */
+export function expandBlocks(blocks) {
+  const days = new Set();
+  for (const b of blocks) for (const d of windowDays(b.startDate, b.endDate)) days.add(d);
+  return days;
+}

@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
+import { loadVocabulary } from '../ai/extract.js';
+import { validateChips } from '../lib/chips.js';
 import { tripPublic, tripMemberPublic, privateInputSelf } from '../lib/views.js';
 
 export const tripsRouter = Router();
@@ -37,6 +39,7 @@ tripsRouter.get('/:id', requireTripMember, async (req, res) => {
 tripsRouter.get('/:id/private-input', requireTripMember, async (req, res) => {
   const { rows } = await query(
     `SELECT pi.max_budget_cents, pi.preferences_text, pi.comfort_text, pi.updated_at,
+            pi.must_have_chips, pi.nice_to_have_chips,
             tm.commitment_type, tm.roast_level
        FROM private_inputs pi
        JOIN trip_members tm ON tm.trip_id = pi.trip_id AND tm.user_id = pi.user_id
@@ -49,8 +52,11 @@ tripsRouter.get('/:id/private-input', requireTripMember, async (req, res) => {
 const privateInputSchema = z
   .strictObject({
     maxBudgetUsd: z.number().min(1).max(10000),
-    preferencesText: z.string().trim().max(500).default(''),
-    comfortText: z.string().trim().max(300).default(''),
+    // Free text ("Anything else?") is the only part that goes to AI extraction.
+    preferencesText: z.string().trim().max(200).default(''),
+    comfortText: z.string().trim().max(200).default(''),
+    mustHaveChips: z.array(z.string().max(40)).max(30).default([]),
+    niceToHaveChips: z.array(z.string().max(40)).max(40).default([]),
     commitmentType: z.enum(['hold', 'pay_by_date', 'need_time']),
     roastLevel: z.enum(['off', 'mild', 'savage']).default('mild'),
   })
@@ -69,6 +75,10 @@ const LOCKED_MEMBER_STATUSES = new Set(['committed', 'dropped']);
 
 tripsRouter.put('/:id/private-input', requireTripMember, validateBody(privateInputSchema), async (req, res) => {
   const { maxBudgetCents, preferencesText, comfortText, commitmentType, roastLevel } = req.body;
+  const mustHaveChips = [...new Set(req.body.mustHaveChips)];
+  const niceToHaveChips = [...new Set(req.body.niceToHaveChips)];
+  const chipError = validateChips(mustHaveChips, niceToHaveChips, await loadVocabulary());
+  if (chipError) throw new HttpError(400, chipError);
   const userId = req.user.id;
 
   const row = await withTransaction(async (client) => {
@@ -86,16 +96,19 @@ tripsRouter.put('/:id/private-input', requireTripMember, validateBody(privateInp
     }
 
     const { rows: [pi] } = await client.query(
-      `INSERT INTO private_inputs (trip_id, user_id, max_budget_cents, preferences_text, comfort_text, updated_at)
-       VALUES ($1, $2, $3, $4, $5, now())
+      `INSERT INTO private_inputs (trip_id, user_id, max_budget_cents, preferences_text, comfort_text,
+                                   must_have_chips, nice_to_have_chips, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
        ON CONFLICT (trip_id, user_id) DO UPDATE
          SET max_budget_cents = EXCLUDED.max_budget_cents,
              preferences_text = EXCLUDED.preferences_text,
              comfort_text     = EXCLUDED.comfort_text,
+             must_have_chips  = EXCLUDED.must_have_chips,
+             nice_to_have_chips = EXCLUDED.nice_to_have_chips,
              -- extracted_json is kept: each field's cache is keyed by its own text.
              updated_at       = now()
-       RETURNING max_budget_cents, preferences_text, comfort_text, updated_at`,
-      [req.tripId, userId, maxBudgetCents, preferencesText, comfortText],
+       RETURNING max_budget_cents, preferences_text, comfort_text, must_have_chips, nice_to_have_chips, updated_at`,
+      [req.tripId, userId, maxBudgetCents, preferencesText, comfortText, mustHaveChips, niceToHaveChips],
     );
     // Consent was given against the old input: it no longer applies.
     await client.query(

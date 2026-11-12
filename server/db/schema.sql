@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS private_inputs (
   preferences_text TEXT NOT NULL DEFAULT '',
   comfort_text     TEXT NOT NULL DEFAULT '',
   extracted_json   JSONB,
+  -- Click-first requirements (chip ids from lib/chips.js); structured, never sent to the AI.
+  must_have_chips    TEXT[] NOT NULL DEFAULT '{}',
+  nice_to_have_chips TEXT[] NOT NULL DEFAULT '{}',
   -- Unused (superseded by consent_overrides); kept so old databases need no destructive migration.
   allowed_room_types TEXT[] NOT NULL DEFAULT '{}',
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -212,10 +215,12 @@ CREATE TABLE IF NOT EXISTS consent_overrides (
 );
 CREATE INDEX IF NOT EXISTS consent_overrides_trip_idx ON consent_overrides(trip_id, status);
 
--- PRIVATE: the days a member can go, within the trip's date window. Owner-only.
-CREATE TABLE IF NOT EXISTS member_availability (
-  trip_id INT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
-  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day     DATE NOT NULL,
-  PRIMARY KEY (trip_id, user_id, day)
+-- PRIVATE: blocks of consecutive days a member can go (each as long as the trip). Owner-only.
+CREATE TABLE IF NOT EXISTS availability_blocks (
+  trip_id   INT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  user_id   INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_day DATE NOT NULL,
+  end_day   DATE NOT NULL,
+  PRIMARY KEY (trip_id, user_id, start_day),
+  CHECK (end_day > start_day)
 );

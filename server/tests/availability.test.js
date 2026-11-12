@@ -18,12 +18,15 @@ vi.mock('../src/ai/llm.js', () => {
 
 const { __pg: pg } = await import('../src/db.js');
 const { app } = await import('../src/index.js');
-const { chooseDates } = await import('../src/lib/dates.js');
+const { chooseDates, expandBlocks } = await import('../src/lib/dates.js');
 
 const as = (u) => `pact_session=${jwt.sign({ sub: String(u) }, process.env.JWT_SECRET)}`;
 const [ORG, ANA, BEN, OUT] = [1, 2, 3, 4];
 const days = (a, b) => { const o = []; for (let d = a; d <= b; d++) o.push(`2027-05-${String(d).padStart(2, '0')}`); return o; };
-const put = (trip, u, d) => request(app).put(`/api/trips/${trip}/availability`).set('Cookie', as(u)).send({ days: d });
+const day = (n) => `2027-05-${String(n).padStart(2, '0')}`;
+// A block is [from, to] in May; trips here are 3 nights, so a valid block is 3 days apart.
+const blocks = (...bs) => bs.map(([a, b]) => ({ startDate: day(a), endDate: day(b) }));
+const put = (trip, u, bs) => request(app).put(`/api/trips/${trip}/availability`).set('Cookie', as(u)).send({ blocks: bs });
 const get = (trip, u) => request(app).get(`/api/trips/${trip}/availability`).set('Cookie', as(u));
 const plan = (trip, u = ORG) => request(app).post(`/api/trips/${trip}/plan`).set('Cookie', as(u));
 
@@ -66,16 +69,22 @@ describe('chooseDates (pure)', () => {
   });
 });
 
+describe('expandBlocks', () => {
+  it('turns date ranges into every covered day', () => {
+    expect([...expandBlocks(blocks([3, 6], [9, 10]))].sort()).toEqual([3, 4, 5, 6, 9, 10].map(day));
+  });
+});
+
 describe('availability is owner-only', () => {
   let trip;
   beforeAll(async () => { trip = await makeTrip(); });
 
   it('stores days privately and never shows them to other members', async () => {
-    expect((await put(trip, ANA, days(2, 4))).status).toBe(200);
+    expect((await put(trip, ANA, blocks([2, 5]))).status).toBe(200);
     const mine = await get(trip, ANA);
-    expect(mine.body.days).toEqual(days(2, 4));
+    expect(mine.body.blocks).toEqual(blocks([2, 5]));
     const theirs = await get(trip, BEN);
-    expect(theirs.body.days).toEqual([]);
+    expect(theirs.body.blocks).toEqual([]);
     for (const u of [ORG, BEN]) {
       const t = await request(app).get(`/api/trips/${trip}`).set('Cookie', as(u));
       expect(JSON.stringify(t.body)).not.toMatch(/2027-05-0[234]\b.*availab|availab/i);
@@ -85,8 +94,11 @@ describe('availability is owner-only', () => {
 
   it('404s for non-members and rejects days outside the window', async () => {
     expect((await get(trip, OUT)).status).toBe(404);
-    expect((await put(trip, OUT, days(2, 3))).status).toBe(404);
-    expect((await put(trip, ANA, ['2027-06-01'])).status).toBe(400);
+    expect((await put(trip, OUT, blocks([2, 5]))).status).toBe(404);
+    expect((await put(trip, ANA, [{ startDate: '2027-06-01', endDate: '2027-06-04' }])).status).toBe(400); // outside window
+    expect((await put(trip, ANA, blocks([8, 11]))).status).toBe(400); // runs past the window end
+    expect((await put(trip, ANA, blocks([2, 4]))).status).toBe(400); // not trip length
+    expect((await put(trip, ANA, [])).status).toBe(400); // at least one block
   });
 
   it('shows "Dates: deciding" data until chosen', async () => {
@@ -98,19 +110,19 @@ describe('availability is owner-only', () => {
 describe('planning picks dates before filtering stays', () => {
   it('chooses the earliest full-overlap run', async () => {
     const trip = await makeTrip();
-    await put(trip, ORG, days(1, 10));
-    await put(trip, ANA, days(3, 10));
-    await put(trip, BEN, days(2, 6).concat(days(8, 10)));
+    await put(trip, ORG, blocks([1, 4], [4, 7], [7, 10]));
+    await put(trip, ANA, blocks([3, 6], [6, 9]));
+    await put(trip, BEN, blocks([2, 5], [6, 9]));
     const res = await plan(trip);
     expect(res.status).toBe(200);
     const t = await request(app).get(`/api/trips/${trip}`).set('Cookie', as(ANA));
-    // 3 nights = 4 days; common days: 3-6 and 8-10 -> earliest 3..6
+    // Everyone is free on days 3-9 -> earliest 3-night run is 3..6
     expect(t.body.trip).toMatchObject({ datesStatus: 'chosen', startDate: '2027-05-03', endDate: '2027-05-06' });
   });
 
   it('asks everyone to share days first', async () => {
     const trip = await makeTrip();
-    await put(trip, ORG, days(1, 10));
+    await put(trip, ORG, blocks([1, 4]));
     const res = await plan(trip);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/2 members still need to share their days/);
@@ -118,9 +130,9 @@ describe('planning picks dates before filtering stays', () => {
 
   it('offers top-3 windows by count only, organizer picks, absent members get a private nudge', async () => {
     const trip = await makeTrip();
-    await put(trip, ORG, days(1, 5));
-    await put(trip, ANA, days(1, 5));
-    await put(trip, BEN, days(7, 10));
+    await put(trip, ORG, blocks([1, 4]));
+    await put(trip, ANA, blocks([1, 4]));
+    await put(trip, BEN, blocks([7, 10]));
     const res = await plan(trip);
     expect(res.status).toBe(200);
     expect(res.body.dateOptions).toHaveLength(3);
@@ -136,6 +148,6 @@ describe('planning picks dates before filtering stays', () => {
 
     expect((await get(trip, BEN)).body.nudge).toBeTruthy(); // Ben isn't free then
     expect((await get(trip, ANA)).body.nudge).toBeNull();
-    expect((await put(trip, ANA, days(1, 3))).status).toBe(409); // dates are chosen now
+    expect((await put(trip, ANA, blocks([1, 4]))).status).toBe(409); // dates are chosen now
   });
 });

@@ -6,9 +6,3 @@ DO $$ BEGIN
   ALTER TABLE trips ADD CONSTRAINT trips_dates_status_check CHECK (dates_status IN ('deciding', 'pick', 'chosen'));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
-CREATE TABLE IF NOT EXISTS member_availability (
-  trip_id INT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
-  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day     DATE NOT NULL,
-  PRIMARY KEY (trip_id, user_id, day)
-);

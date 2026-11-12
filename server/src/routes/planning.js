@@ -14,7 +14,7 @@ import { counterfactual } from '../lib/counterfactual.js';
 import {
   prepareNegotiations, saveNegotiations, negotiationNotice, WORKING_MESSAGE, EXHAUSTED_MESSAGE,
 } from '../lib/negotiations.js';
-import { chooseDates } from '../lib/dates.js';
+import { chooseDates, expandBlocks } from '../lib/dates.js';
 import { proposalPublic } from '../lib/views.js';
 import { extractAll, pickAndExplain } from '../ai/plan.js';
 import { askPact } from '../ai/ask.js';
@@ -210,9 +210,11 @@ export async function runPlan(tripId, actorUserId, { retryIfStale = true } = {})
  */
 async function resolveDates(trip, members) {
   const { rows } = await query(
-    'SELECT user_id, day FROM member_availability WHERE trip_id = $1 ORDER BY day', [trip.id]);
-  const availability = new Map(members.map((m) => [m.user_id, new Set()]));
-  for (const r of rows) availability.get(r.user_id)?.add(r.day);
+    'SELECT user_id, start_day, end_day FROM availability_blocks WHERE trip_id = $1', [trip.id]);
+  // Blocks (date ranges) become available days; the overlap search is unchanged.
+  const byUser = new Map(members.map((m) => [m.user_id, []]));
+  for (const r of rows) byUser.get(r.user_id)?.push({ startDate: r.start_day, endDate: r.end_day });
+  const availability = new Map([...byUser].map(([id, blocks]) => [id, expandBlocks(blocks)]));
   const missing = [...availability.values()].filter((d) => d.size === 0).length;
   if (missing > 0) {
     throw new HttpError(400, `${missing} ${missing === 1 ? 'member still needs' : 'members still need'} to share their days`);

@@ -7,7 +7,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { validateBody } from '../lib/validate.js';
 import { HttpError } from '../lib/httpError.js';
 import { assertTripMember, parseId } from '../lib/membership.js';
-import { addDays, windowDays } from '../lib/dates.js';
+import { addDays, daysBetween, expandBlocks, windowDays } from '../lib/dates.js';
 
 export const availabilityRouter = Router();
 availabilityRouter.use(requireAuth);
@@ -24,38 +24,44 @@ export const DATES_NUDGE = 'The chosen dates don’t match all the days you mark
 availabilityRouter.get('/:id/availability', requireTripMember, async (req, res) => {
   const t = req.trip;
   const { rows } = await query(
-    'SELECT day FROM member_availability WHERE trip_id = $1 AND user_id = $2 ORDER BY day',
+    'SELECT start_day, end_day FROM availability_blocks WHERE trip_id = $1 AND user_id = $2 ORDER BY start_day',
     [req.tripId, req.user.id],
   );
-  const days = rows.map((r) => r.day);
+  const blocks = rows.map((r) => ({ startDate: r.start_day, endDate: r.end_day }));
+  const days = expandBlocks(blocks);
   const chosen = t.dates_status === 'chosen';
   const covered = chosen && t.window_start
-    && windowDays(t.start_date, t.end_date).every((d) => days.includes(d));
+    && windowDays(t.start_date, t.end_date).every((d) => days.has(d));
   res.json({
     windowStart: t.window_start ?? null,
     windowEnd: t.window_end ?? null,
     nights: t.nights,
     datesStatus: t.dates_status,
-    days,
-    submitted: days.length > 0,
+    blocks,
+    submitted: blocks.length > 0,
     // PUBLIC counts only: never who is (un)available.
     options: t.dates_status === 'pick' ? t.date_options ?? [] : [],
     // PRIVATE nudge: only for a member the chosen dates don't fully suit.
-    nudge: chosen && t.window_start && days.length > 0 && !covered ? DATES_NUDGE : null,
+    nudge: chosen && t.window_start && blocks.length > 0 && !covered ? DATES_NUDGE : null,
   });
 });
 
 const dayList = z.iso.date();
-const availabilitySchema = z.strictObject({ days: z.array(dayList).min(1).max(400) });
+const blockSchema = z.strictObject({ startDate: dayList, endDate: dayList });
+const availabilitySchema = z.strictObject({ blocks: z.array(blockSchema).min(1).max(60) });
 
 const EDITABLE = new Set(['collecting', 'planning']);
 
 availabilityRouter.put('/:id/availability', requireTripMember, validateBody(availabilitySchema), async (req, res) => {
   const t = req.trip;
   if (!t.window_start) throw new HttpError(409, 'This trip has fixed dates');
-  const inWindow = new Set(windowDays(t.window_start, t.window_end));
-  const days = [...new Set(req.body.days)];
-  if (days.some((d) => !inWindow.has(d))) throw new HttpError(400, 'Pick days inside the date window');
+  // Every block is exactly as long as the trip and sits inside the window.
+  const blocks = [...new Map(req.body.blocks.map((b) => [b.startDate, b])).values()]
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  for (const b of blocks) {
+    if (daysBetween(b.startDate, b.endDate) !== t.nights) throw new HttpError(400, 'Each block must be as long as the trip');
+    if (b.startDate < t.window_start || b.endDate > t.window_end) throw new HttpError(400, 'Pick blocks inside the date window');
+  }
 
   await withTransaction(async (client) => {
     const { rows: [trip] } = await client.query(
@@ -64,18 +70,19 @@ availabilityRouter.put('/:id/availability', requireTripMember, validateBody(avai
       throw new HttpError(409, 'Dates are already chosen');
     }
     if (req.trip.member_status === 'dropped') throw new HttpError(409, 'You can no longer change your days');
-    await client.query('DELETE FROM member_availability WHERE trip_id = $1 AND user_id = $2', [req.tripId, req.user.id]);
-    await client.query(
-      `INSERT INTO member_availability (trip_id, user_id, day)
-       SELECT $1, $2, unnest($3::date[])`,
-      [req.tripId, req.user.id, days],
-    );
+    await client.query('DELETE FROM availability_blocks WHERE trip_id = $1 AND user_id = $2', [req.tripId, req.user.id]);
+    for (const b of blocks) {
+      await client.query(
+        'INSERT INTO availability_blocks (trip_id, user_id, start_day, end_day) VALUES ($1, $2, $3, $4)',
+        [req.tripId, req.user.id, b.startDate, b.endDate],
+      );
+    }
     // Offered windows were counted from the old days: recompute on the next plan.
     if (trip.dates_status === 'pick') {
       await client.query(`UPDATE trips SET dates_status = 'deciding', date_options = NULL WHERE id = $1`, [req.tripId]);
     }
   });
-  res.json({ days: days.sort() });
+  res.json({ blocks });
 });
 
 // --- Organizer picks one of the offered windows (counts-only fallback).

@@ -10,6 +10,8 @@ import { btn, card, ErrorNote, Loading } from './ui.jsx';
 import { PixelLock, PactAvatar } from './Planning.jsx';
 
 const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+// Only the PayPal-account option: no Pay Later, credit, card or Venmo buttons.
+const DISABLED_FUNDING = 'paylater,credit,card,venmo';
 const OPEN_STATUSES = new Set(['committing', 'needs_attention']);
 
 const TYPE_LABEL = {
@@ -29,8 +31,8 @@ function PayPalPay({ intent, createPath, confirmPath, onDone }) {
   }
   return (
     <div className="mt-4">
-      {/* key: switching intent needs a fresh SDK script */}
-      <PayPalScriptProvider key={intent} options={{ clientId: PAYPAL_CLIENT_ID, currency: 'USD', intent }}>
+      {/* One provider per intent (authorize = holds, capture = pay now); the SDK intent must match the server order. key forces a fresh SDK script. */}
+      <PayPalScriptProvider key={intent} options={{ clientId: PAYPAL_CLIENT_ID, currency: 'USD', intent, 'disable-funding': DISABLED_FUNDING }}>
         <div className={busy ? 'pointer-events-none opacity-60' : ''}>
           <PayPalButtons
             style={{ layout: 'vertical', shape: 'pill', label: intent === 'authorize' ? 'paypal' : 'pay', height: 44 }}
@@ -178,8 +180,8 @@ function MyCommitment({ tripId, tripStatus, me, onChanged }) {
         <>
           <p className="mt-4 text-sm text-pine-soft">
             {intent === 'authorize'
-              ? 'PayPal holds your share now. Nothing is charged until everyone’s in and the stay is booked.'
-              : 'Pay your share now through PayPal.'}
+              ? 'PayPal will say “Pay Now” — for a hold, your money is only reserved until the group books. You can be released anytime before booking.'
+              : 'This pays your share now.'}
           </p>
           <PayPalPay intent={intent}
             createPath={`/api/trips/${tripId}/commit/${kind}`}
@@ -216,10 +218,15 @@ function CoverFriend({ tripId, onChanged }) {
         Hold {formatUsd(data.amountCents)} for them. Pact never says who, and they can pay you back later.
       </p>
       {open ? (
+        <>
+          <p className="mt-4 text-sm text-pine-soft">
+            PayPal will say “Pay Now” — for a hold, your money is only reserved until the group books. You can be released anytime before booking.
+          </p>
         <PayPalPay intent="authorize"
           createPath={`/api/trips/${tripId}/cover`}
           confirmPath={`/api/trips/${tripId}/cover/confirm`}
           onDone={onChanged} />
+        </>
       ) : (
         <button type="button" onClick={() => setOpen(true)} className={`${btn.base} ${btn.coral} ${btn.small} mt-4`}>
           Cover a friend · {formatUsd(data.amountCents)}
